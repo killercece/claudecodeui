@@ -47,10 +47,10 @@ describe('the background tasks strip', () => {
       />,
     );
 
+    // Le running agent n'est plus une puce : RunningAgentsPanel le liste en détail.
     const chips = screen.getAllByRole('button');
     expect(chips.map((chip) => chip.textContent)).toEqual([
       'Workflowfrontend-architecture-audit· Verify 3/6',
-      'AgentSurvey the repo· 12 tools',
     ]);
   });
 
@@ -213,7 +213,6 @@ describe('the background tasks strip', () => {
 
     expect(screen.getAllByRole('button').map((chip) => chip.textContent)).toEqual([
       'Workflowaudit',
-      'AgentSurvey the repo',
     ]);
   });
 

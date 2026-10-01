@@ -6,7 +6,7 @@ import { cn } from '@/shared/utils';
 import { SubagentTimeline } from '@/modules/chat/tools/SubagentTimeline';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { MarkdownContent } from '@/modules/chat/tools/ContentRenderers/MarkdownContent';
-import { resolveBackgroundTaskStatus } from '@/modules/chat/utils/backgroundTasks';
+import { resolveSubagentStatus } from '@/modules/chat/utils/backgroundTasks';
 
 type SubagentPanelProps = {
   /** Raw tool input of the call that spawned the agent, used for the prompt. */
@@ -35,9 +35,9 @@ function parseToolInput(toolInput: unknown): Record<string, unknown> {
 /**
  * Unwraps the block-array shape agent results sometimes arrive in
  * (`[{ type: 'text', text }]`) so the answer renders as markdown rather than
- * as JSON.
+ * as JSON. Also used by the chat transcript's AgentTranscriptDrawer.
  */
-function readResultText(content: unknown): string {
+export function readResultText(content: unknown): string {
   if (Array.isArray(content)) {
     return content
       .filter((part) => typeof part === 'object' && part !== null && (part as { type?: string }).type === 'text')
@@ -93,18 +93,7 @@ export const SubagentPanel = memo(({
   const resultText = useMemo(() => readResultText(toolResult?.content), [toolResult?.content]);
 
   const entries = activity ?? [];
-  // A background agent's tool result is only its launch acknowledgement — the
-  // real answer arrives later as a task notification — so its arrival says
-  // nothing about whether the agent finished. Treating it as an outcome marked
-  // every background agent `completed` a second after it launched, which is
-  // where the spinner went. Until the server reports one on `subagent` or the
-  // live stream's task events say otherwise, an async launch is still
-  // outstanding.
-  const isAsyncAgentLaunch = Boolean(
-    (toolResult?.toolUseResult as { isAsync?: boolean } | undefined)?.isAsync,
-  );
-  const status = resolveBackgroundTaskStatus(subagent?.status, taskStatus?.status)
-    ?? (toolResult && !isAsyncAgentLaunch ? 'completed' : 'running');
+  const status = resolveSubagentStatus(subagent, taskStatus, toolResult);
   const toolCount = entries.filter((entry) => entry.kind === 'tool').length;
   // Claude names its agent presets (Explore, Plan); Codex has none, so the
   // neutral label carries and the assigned nickname shows alongside it.

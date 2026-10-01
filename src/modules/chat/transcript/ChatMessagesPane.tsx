@@ -19,6 +19,7 @@ import ToolGroupContainer from '@/modules/chat/transcript/ToolGroupContainer';
 import LoadAllMessagesOverlay from '@/modules/chat/transcript/LoadAllMessagesOverlay';
 import ChatExportMenu from '@/modules/chat/transcript/ChatExportMenu';
 import { BackgroundTasksStrip } from '@/modules/chat/transcript/BackgroundTasksStrip';
+import { RunningAgentsPanel } from '@/modules/chat/transcript/RunningAgentsPanel';
 
 /**
  * How many of the newest rows mount with real content on the first commit,
@@ -197,7 +198,16 @@ function ChatMessagesPane({
       {chatMessages.length > 0 && (
         <div className="pointer-events-none sticky right-4 top-3 z-10 mb-2 flex items-start justify-between gap-2 sm:px-4">
           {/* Running background work stays in view while the transcript scrolls under it. */}
-          <div className="pointer-events-auto min-w-0 pl-4 sm:pl-0">
+          <div className="pointer-events-auto flex min-w-0 flex-col items-start gap-1.5 pl-4 sm:pl-0">
+            <RunningAgentsPanel
+              messages={chatMessages}
+              sessionId={selectedSession?.id || currentSessionId}
+              sendMessage={sendMessage}
+              onReveal={revealMessage}
+              createDiff={createDiff}
+              onFileOpen={onFileOpen}
+              selectedProject={selectedProject}
+            />
             <BackgroundTasksStrip
               messages={chatMessages}
               tasks={backgroundTasks}

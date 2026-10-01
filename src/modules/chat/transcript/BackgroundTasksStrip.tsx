@@ -103,7 +103,9 @@ function describeTask(message: ChatMessage, t: TFunction) {
  */
 export const BackgroundTasksStrip = memo(({ messages, tasks, sessionId, sendMessage, onReveal, onLoadAll }: BackgroundTasksStripProps) => {
   const { t } = useTranslation();
-  const running = listRunningBackgroundLaunches(messages);
+  // Les agents ont leur propre liste détaillée (RunningAgentsPanel) : la bande
+  // garde les workflows et les commandes, sans doublon.
+  const running = listRunningBackgroundLaunches(messages).filter((message) => !message.isSubagentContainer);
   // A loaded row that has a word on its task — settled or not — is the word;
   // a task whose row is not loaded, or is loaded without one (a backgrounded
   // command's launch row from history says nothing until the poll does), is

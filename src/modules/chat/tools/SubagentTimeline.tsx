@@ -13,6 +13,8 @@ type SubagentTimelineProps = {
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   createDiff: (oldStr: string, newStr: string) => DiffLine[];
   selectedProject?: Project | null;
+  /** Draws the newest entries and folds the older ones behind "show earlier", for a live view that follows the run. */
+  fromEnd?: boolean;
 };
 
 /**
@@ -52,7 +54,7 @@ SubagentNote.displayName = 'SubagentNote';
  * Only mount it while its panel is open: a run of a hundred tools is a
  * hundred tool renderers.
  */
-export const SubagentTimeline = memo(({ activity, activityCount, onFileOpen, createDiff, selectedProject }: SubagentTimelineProps) => {
+export const SubagentTimeline = memo(({ activity, activityCount, onFileOpen, createDiff, selectedProject, fromEnd = false }: SubagentTimelineProps) => {
   const isExporting = useIsExportingTranscript();
   // Raised by the "show more" step so a long run can be inspected in full
   // without paying for it up front.
@@ -62,11 +64,22 @@ export const SubagentTimeline = memo(({ activity, activityCount, onFileOpen, cre
   // The backend truncates very long timelines for transport; say so rather
   // than implying the agent stopped where the list does.
   const untransmittedCount = Math.max(0, (activityCount ?? activity.length) - activity.length);
-  const visibleEntries = activity.slice(0, effectiveRenderLimit);
+  const visibleEntries = fromEnd ? activity.slice(-effectiveRenderLimit) : activity.slice(0, effectiveRenderLimit);
   const hiddenCount = activity.length - visibleEntries.length;
+  const showMoreButton = hiddenCount > 0 && (
+    <button
+      type="button"
+      onClick={() => setRenderLimit((previous) => previous + INITIALLY_RENDERED_ACTIVITIES * 4)}
+      className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+    >
+      Show {hiddenCount} {fromEnd ? 'earlier' : 'more'} {hiddenCount === 1 ? 'step' : 'steps'}
+    </button>
+  );
 
   return (
     <>
+      {fromEnd && showMoreButton}
+
       {visibleEntries.length > 0 && (
         <div className="border-l border-border/60 pl-2">
           {visibleEntries.map((entry, index) => (
@@ -92,15 +105,7 @@ export const SubagentTimeline = memo(({ activity, activityCount, onFileOpen, cre
         </div>
       )}
 
-      {hiddenCount > 0 && (
-        <button
-          type="button"
-          onClick={() => setRenderLimit((previous) => previous + INITIALLY_RENDERED_ACTIVITIES * 4)}
-          className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-        >
-          Show {hiddenCount} more {hiddenCount === 1 ? 'step' : 'steps'}
-        </button>
-      )}
+      {!fromEnd && showMoreButton}
 
       {untransmittedCount > 0 && hiddenCount === 0 && (
         <div className="text-[11px] text-muted-foreground/60">

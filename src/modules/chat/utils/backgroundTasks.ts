@@ -51,6 +51,25 @@ export function readBackgroundTaskId(message: ChatMessage): string | undefined {
   return typeof acknowledged === 'string' && acknowledged ? acknowledged : undefined;
 }
 
+/**
+ * The status a subagent row shows. A background agent's tool result is only its
+ * launch acknowledgement, so its arrival does not mean the agent finished: an
+ * async launch stays `running` until the server or the live task events say
+ * otherwise. Shared by SubagentPanel (the row in the transcript) and
+ * RunningAgentsPanel (the sticky list) so both always agree.
+ */
+export function resolveSubagentStatus(
+  subagent: ChatMessage['subagent'],
+  taskStatus: ChatMessage['taskStatus'],
+  toolResult: ChatMessage['toolResult'],
+): BackgroundTaskStatus {
+  const isAsyncAgentLaunch = Boolean(
+    (toolResult?.toolUseResult as { isAsync?: boolean } | undefined)?.isAsync,
+  );
+  return resolveBackgroundTaskStatus(subagent?.status, taskStatus?.status)
+    ?? (toolResult && !isAsyncAgentLaunch ? 'completed' : 'running');
+}
+
 /** A tool call that launched a background task; its id is what the task's events are keyed by. */
 type BackgroundLaunchRow = ChatMessage & { toolId: string };
 
