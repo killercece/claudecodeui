@@ -1,7 +1,9 @@
+import { sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type { IProvider } from '@/shared/interfaces.js';
+import { resolveTurnWorkingDirectory } from '@/shared/utils.js';
 import type {
   AnyRecord,
   BackgroundTaskSummary,
@@ -22,6 +24,7 @@ type ProviderRuntimeServiceDependencies = {
     requestedModel?: string | null,
   ): Promise<string | undefined>;
   getProviderModels: typeof providerModelsService.getProviderModels;
+  getSessionProjectPath(sessionId: string): string | null;
 };
 
 const defaultDependencies: ProviderRuntimeServiceDependencies = {
@@ -31,6 +34,7 @@ const defaultDependencies: ProviderRuntimeServiceDependencies = {
   resolveResumeModel: (provider, sessionId, requestedModel) =>
     providerModelsService.resolveResumeModel(provider, sessionId, requestedModel),
   getProviderModels: (provider) => providerModelsService.getProviderModels(provider),
+  getSessionProjectPath: (sessionId) => sessionsDb.getSessionById(sessionId)?.project_path ?? null,
 };
 
 /**
@@ -107,7 +111,14 @@ export function createProviderRuntimeService(
     /** The session's background tasks a turn with these options would stop; empty when it stops none. */
     tasksStoppedByTurn(providerName: LLMProvider, sessionId: string, options: Record<string, unknown>): BackgroundTaskSummary[] {
       const { runtime } = dependencies.resolveProvider(providerName);
-      return runtime.tasksStoppedByTurn?.(sessionId, options) ?? [];
+      // The real send fills in the session's directory before it reaches the runtime, and a
+      // live process is matched on it: without the same here every check would report that
+      // the send needs a new process, and so stops the session's tasks, when it does not.
+      const turnOptions = {
+        ...options,
+        cwd: resolveTurnWorkingDirectory(options.cwd, dependencies.getSessionProjectPath(sessionId)),
+      };
+      return runtime.tasksStoppedByTurn?.(sessionId, turnOptions) ?? [];
     },
 
     hasBackgroundWork(sessionId: string): boolean {

@@ -59,6 +59,27 @@ type NormalizedMessageInput =
   } & Record<string, unknown>;
 
 // ---------------------------
+//----------------- CHAT TURN UTILITIES ------------
+/**
+ * The working directory a chat turn runs in: the one the client sent, else the
+ * session's project path.
+ *
+ * Used both when a turn is dispatched and when the client asks beforehand what a send
+ * would do. A live provider process is matched on this directory among other settings,
+ * so the check has to compute it exactly as the send does or it reports a mismatch
+ * that the real send never has.
+ *
+ * @param clientCwd - `cwd` from the client's send options, when present
+ * @param sessionProjectPath - The session row's project path, when it has one
+ */
+export function resolveTurnWorkingDirectory(
+  clientCwd: unknown,
+  sessionProjectPath: string | null | undefined,
+): unknown {
+  return clientCwd ?? sessionProjectPath ?? undefined;
+}
+
+// ---------------------------
 //----------------- HTTP HANDLER UTILITIES ------------
 /**
  * Wraps arbitrary data in the standard API success envelope.

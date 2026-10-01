@@ -19,7 +19,7 @@ import type {
   ProviderPermissionDecision,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
-import { parseIncomingJsonObject } from '@/shared/utils.js';
+import { parseIncomingJsonObject, resolveTurnWorkingDirectory } from '@/shared/utils.js';
 
 /**
  * Trust boundary for client-supplied image attachments: chat.send options come
@@ -280,7 +280,7 @@ async function dispatchRun(
     images: uniqueAttachments.filter(isImageAttachmentDescriptor),
     files: uniqueAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
     sessionId,
-    cwd: clientOptions.cwd ?? session.project_path ?? undefined,
+    cwd: resolveTurnWorkingDirectory(clientOptions.cwd, session.project_path),
     projectPath: session.project_path ?? clientOptions.projectPath,
   };
 
