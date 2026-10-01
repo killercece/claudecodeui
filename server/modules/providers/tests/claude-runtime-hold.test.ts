@@ -107,6 +107,7 @@ async function withRun(
     /** Sends another message to the same session, with a writer of its own like a new chat run has. */
     ask: (command: string, extraOptions?: Record<string, unknown>) => AskedTurn;
   }) => Promise<void>,
+  startOptions: Record<string, unknown> = {},
 ): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
   const { createQuery, script } = createScriptedQuery();
@@ -123,7 +124,7 @@ async function withRun(
   };
 
   try {
-    const done = queryClaudeSDK('hello', { sessionId: SESSION_ID, cwd }, writer as never, context);
+    const done = queryClaudeSDK('hello', { sessionId: SESSION_ID, cwd, ...startOptions }, writer as never, context);
     const ask = (command: string, extraOptions: Record<string, unknown> = {}): AskedTurn => {
       const askedSent: NormalizedMessage[] = [];
       const askedWriter = { send: (message: NormalizedMessage) => { askedSent.push(message); }, userId: null };
@@ -378,4 +379,33 @@ test('a foreground task of the live turn is sent to the background through the C
 
 test('a session without a live process has nothing to send to the background', async () => {
   assert.equal(await backgroundClaudeSDKTasks('no-such-session', 'toolu_fg'), false);
+});
+
+test('thinking summaries are requested so reasoning has text to show, except for models without adaptive thinking', async () => {
+  const previous = process.env.CLAUDE_THINKING_DISPLAY;
+  try {
+    delete process.env.CLAUDE_THINKING_DISPLAY;
+    await withRun(async ({ script }) => {
+      await settle();
+      // Without it the API returns empty thinking blocks, for the main thread and for subagents alike.
+      assert.deepEqual(script.lastOptions()?.thinking, { type: 'adaptive', display: 'summarized' });
+    });
+
+    await withRun(async ({ script }) => {
+      await settle();
+      assert.equal(script.lastOptions()?.thinking, undefined, 'a model that predates adaptive thinking keeps the CLI default');
+    }, { model: 'claude-haiku-4-5-20251001' });
+
+    process.env.CLAUDE_THINKING_DISPLAY = 'omitted';
+    await withRun(async ({ script }) => {
+      await settle();
+      assert.equal(script.lastOptions()?.thinking, undefined, 'the environment can switch it off');
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CLAUDE_THINKING_DISPLAY;
+    } else {
+      process.env.CLAUDE_THINKING_DISPLAY = previous;
+    }
+  }
 });

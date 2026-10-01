@@ -120,6 +120,34 @@ function applyClaudeEffort(sdkOptions, resolvedEffort) {
   };
 }
 
+/**
+ * Models that predate adaptive thinking (Opus 4.6 and later have it) keep the CLI's
+ * own choice, since an adaptive request could be refused for them.
+ * @param {string} model - Model id or alias the turn runs with
+ * @returns {boolean} True when the model takes an adaptive thinking request
+ */
+function supportsAdaptiveThinking(model) {
+  return !/haiku|sonnet-4|opus-4-[0-5]|claude-3/i.test(model || '');
+}
+
+/**
+ * Asks the API for summaries of the model's thinking. Without it the API returns
+ * thinking blocks that are empty (only a signature), which is why neither the main
+ * thread's "Thought for a few seconds" nor a subagent's transcript had any reasoning
+ * to show. Subagents inherit the request. CLAUDE_THINKING_DISPLAY=omitted restores
+ * the CLI's default of not requesting them.
+ * @param {Object} sdkOptions - SDK options being built
+ */
+function applyThinkingDisplay(sdkOptions) {
+  if (sdkOptions.thinking || process.env.CLAUDE_THINKING_DISPLAY === 'omitted') {
+    return;
+  }
+  if (!supportsAdaptiveThinking(sdkOptions.model)) {
+    return;
+  }
+  sdkOptions.thinking = { type: 'adaptive', display: 'summarized' };
+}
+
 function createRequestId() {
   if (typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -294,6 +322,8 @@ function mapCliOptionsToSDK(options = {}) {
     effort,
     options.effortModels || CLAUDE_PREDEFINED_MODELS,
   ));
+
+  applyThinkingDisplay(sdkOptions);
 
   sdkOptions.systemPrompt = {
     type: 'preset',
