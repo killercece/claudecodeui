@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Bot, CornerDownLeft, X } from 'lucide-react';
+import { ArrowDownToLine, Bot, CornerDownLeft, X } from 'lucide-react';
 
 import type { ChatMessage, DiffLine, Project } from '@/shared/types';
 import { SubagentTimeline } from '@/modules/chat/tools/SubagentTimeline';
@@ -23,6 +23,8 @@ type AgentTranscriptDrawerProps = {
   onClose: () => void;
   /** Closes the drawer and brings the agent's block into view in the conversation. */
   onLocate: (message: ChatMessage) => void;
+  /** Sends the agent to the background; only given while the agent is blocking the turn. */
+  onSendToBackground?: () => void;
 };
 
 /**
@@ -39,6 +41,7 @@ export const AgentTranscriptDrawer = memo(({
   selectedProject,
   onClose,
   onLocate,
+  onSendToBackground,
 }: AgentTranscriptDrawerProps) => {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -90,6 +93,17 @@ export const AgentTranscriptDrawer = memo(({
           </div>
           {description && <div className="truncate text-xs text-muted-foreground">{description}</div>}
         </div>
+        {onSendToBackground && status === 'running' && (
+          <button
+            type="button"
+            onClick={onSendToBackground}
+            title={t('workflow.sendToBackgroundHint', 'Run in background: the conversation is free again while it works, and the result comes back when it finishes')}
+            className="flex h-7 items-center gap-1 rounded px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <ArrowDownToLine className="h-3.5 w-3.5" />
+            {t('workflow.sendToBackground', 'Run in background')}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => onLocate(agent)}

@@ -98,6 +98,12 @@ export function createProviderRuntimeService(
       return Boolean(await runtime.stopBackgroundTask?.(sessionId, taskId));
     },
 
+    async backgroundTasks(providerName: LLMProvider, sessionId: string, toolUseId?: string): Promise<boolean> {
+      // A runtime without foreground tasks has nothing to send to the background.
+      const { runtime } = dependencies.resolveProvider(providerName);
+      return Boolean(await runtime.backgroundTasks?.(sessionId, toolUseId));
+    },
+
     /** The session's background tasks a turn with these options would stop; empty when it stops none. */
     tasksStoppedByTurn(providerName: LLMProvider, sessionId: string, options: Record<string, unknown>): BackgroundTaskSummary[] {
       const { runtime } = dependencies.resolveProvider(providerName);

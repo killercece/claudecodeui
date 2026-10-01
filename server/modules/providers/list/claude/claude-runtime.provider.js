@@ -1597,6 +1597,24 @@ async function stopClaudeSDKTask(sessionId, taskId) {
 }
 
 /**
+ * Sends a foreground task of the session's live turn to the background — the
+ * Ctrl+B of the terminal. The blocking tool call returns at once with a
+ * "running in the background" result, so the turn can end and the session takes
+ * messages again while the task keeps going; the held process then reports it
+ * when it settles.
+ * @param {string} sessionId - Session identifier
+ * @param {string} [toolUseId] - The tool_use block of the one task to background; all foreground tasks when omitted
+ * @returns {Promise<boolean>} False when the session has no live process or no foreground task matched
+ */
+async function backgroundClaudeSDKTasks(sessionId, toolUseId) {
+  const session = getSession(sessionId);
+  if (!session || session.status !== 'active') {
+    return false;
+  }
+  return Boolean(await session.instance.backgroundTasks(toolUseId));
+}
+
+/**
  * Checks if an SDK session is currently active
  * @param {string} sessionId - Session identifier
  * @returns {boolean} True if session is active
@@ -1675,6 +1693,7 @@ export const claudeRuntime = {
   },
   listBackgroundWork: listClaudeSDKBackgroundWork,
   stopBackgroundTask: stopClaudeSDKTask,
+  backgroundTasks: backgroundClaudeSDKTasks,
   tasksStoppedByTurn: listTasksStoppedByTurn,
 };
 
@@ -1685,6 +1704,7 @@ export {
   listClaudeSDKBackgroundWork,
   listTasksStoppedByTurn,
   stopClaudeSDKTask,
+  backgroundClaudeSDKTasks,
   isClaudeSDKSessionActive,
   getClaudeSDKSessionStartTime,
   getActiveClaudeSDKSessions,

@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, ChevronDown, CircleAlert, CircleCheck, CircleDashed, X } from 'lucide-react';
+import { ArrowDownToLine, Bot, ChevronDown, CircleAlert, CircleCheck, CircleDashed, X } from 'lucide-react';
 
 import type { ChatMessage, DiffLine, Project, SubagentActivity } from '@/shared/types';
 import { cn } from '@/shared/utils';
@@ -105,6 +105,16 @@ export const RunningAgentsPanel = memo(({ messages, sessionId, sendMessage, onRe
   // L'agent dont le transcript est ouvert dans le tiroir, retrouvé à chaque rendu pour rester en direct.
   const [openAgentId, setOpenAgentId] = useState<string | null>(null);
   const closeDrawer = useCallback(() => setOpenAgentId(null), []);
+
+  // Un agent dont l'appel n'a pas encore rendu de résultat bloque le tour : tant qu'il tourne
+  // ainsi, la conversation ne prend pas de message. Un agent d'arrière-plan reçoit tout de suite
+  // son accusé de lancement, donc il n'est pas concerné.
+  const isForeground = (message: ChatMessage) => Boolean(sessionId && message.toolId && !message.toolResult);
+  const sendToBackground = (message: ChatMessage) => {
+    if (sessionId && message.toolId) {
+      sendMessage({ type: 'chat.background-task', sessionId, toolUseId: message.toolId });
+    }
+  };
 
   const agents = messages.filter((message) => message.isSubagentContainer && message.toolId);
   const statusOf = (message: ChatMessage) =>
@@ -213,6 +223,17 @@ export const RunningAgentsPanel = memo(({ messages, sessionId, sendMessage, onRe
                       <span className="truncate pl-3 font-mono text-[10px] text-muted-foreground/70">{current}</span>
                     )}
                   </button>
+                  {isForeground(message) && (
+                    <button
+                      type="button"
+                      onClick={() => sendToBackground(message)}
+                      aria-label={t('workflow.sendToBackground', 'Run in background')}
+                      title={t('workflow.sendToBackgroundHint', 'Run in background: the conversation is free again while it works, and the result comes back when it finishes')}
+                      className="mr-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-muted-foreground/60 hover:bg-muted hover:text-foreground"
+                    >
+                      <ArrowDownToLine className="h-3 w-3" />
+                    </button>
+                  )}
                   {sessionId && taskId && (
                     <button
                       type="button"
@@ -262,6 +283,7 @@ export const RunningAgentsPanel = memo(({ messages, sessionId, sendMessage, onRe
           onFileOpen={onFileOpen}
           selectedProject={selectedProject}
           onClose={closeDrawer}
+          onSendToBackground={isForeground(openAgent) ? () => sendToBackground(openAgent) : undefined}
           onLocate={(message) => {
             closeDrawer();
             onReveal(message);

@@ -52,6 +52,14 @@ export interface IProviderRuntime {
    */
   stopBackgroundTask?(sessionId: string, taskId: string): Promise<boolean>;
   /**
+   * Sends the session's foreground tasks (agents, commands) of the live turn to
+   * the background, so the turn can end and the session takes messages while they
+   * keep running. Targets one task by its tool_use id, or all when omitted.
+   * Resolves false when the session has no live process or no matching foreground
+   * task. A runtime without foreground tasks leaves this undefined.
+   */
+  backgroundTasks?(sessionId: string, toolUseId?: string): Promise<boolean>;
+  /**
    * The background tasks that sending a turn with these options to the session
    * would stop, because the turn has to replace the live process they run under.
    * Empty when nothing runs or when the turn can join the process instead. A

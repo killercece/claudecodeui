@@ -164,3 +164,70 @@ describe('the running agents panel', () => {
     expect(sendMessage).toHaveBeenCalledWith({ type: 'chat.stop-task', sessionId: 'session-1', taskId: 'task-9' });
   });
 });
+
+describe('sending an agent to the background', () => {
+  it('offers it on an agent that blocks the turn, and sends the id of the blocking call', () => {
+    const sendMessage = vi.fn();
+    render(
+      <RunningAgentsPanel
+        sessionId="session-1"
+        createDiff={() => []}
+        sendMessage={sendMessage}
+        onReveal={() => {}}
+        messages={[
+          agentRow({
+            toolId: 'toolu_fg',
+            subagent: { id: 'a1', type: 'general-purpose', description: 'Long job', status: 'running' },
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Run in background'));
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'chat.background-task', sessionId: 'session-1', toolUseId: 'toolu_fg' });
+  });
+
+  it('does not offer it on an agent that already runs in the background', () => {
+    render(
+      <RunningAgentsPanel
+        sessionId="session-1"
+        createDiff={() => []}
+        sendMessage={() => {}}
+        onReveal={() => {}}
+        messages={[
+          agentRow({
+            toolId: 'toolu_bg',
+            // The launch acknowledgement of a background agent: the call has returned.
+            toolResult: { content: 'Async agent launched', isError: false, toolUseResult: { isAsync: true } },
+            taskStatus: { status: 'running', taskId: 'task-1', description: 'Long job' },
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.queryByLabelText('Run in background')).toBeNull();
+  });
+
+  it('is also offered from the agent transcript drawer', () => {
+    const sendMessage = vi.fn();
+    render(
+      <RunningAgentsPanel
+        sessionId="session-1"
+        createDiff={() => []}
+        sendMessage={sendMessage}
+        onReveal={() => {}}
+        messages={[
+          agentRow({
+            toolId: 'toolu_fg',
+            subagent: { id: 'a1', type: 'general-purpose', description: 'Long job', status: 'running' },
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Long job'));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    fireEvent.click(screen.getByText('Run in background'));
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'chat.background-task', sessionId: 'session-1', toolUseId: 'toolu_fg' });
+  });
+});

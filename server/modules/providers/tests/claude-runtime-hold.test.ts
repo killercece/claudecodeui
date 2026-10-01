@@ -11,6 +11,7 @@ import {
   listTasksStoppedByTurn,
   queryClaudeSDK,
   stopClaudeSDKTask,
+  backgroundClaudeSDKTasks,
 } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import type { NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.js';
 
@@ -30,6 +31,8 @@ type Scripted = {
   end: () => void;
   released: () => boolean;
   stopped: string[];
+  /** The tool_use ids the runtime asked the CLI to send to the background. */
+  backgrounded: Array<string | undefined>;
   /** Every user message the CLI read on its stdin, across all processes. */
   prompts: unknown[];
   /** How many CLI processes the runtime started. */
@@ -45,6 +48,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
   let released = false;
   let queries = 0;
   const stopped: string[] = [];
+  const backgrounded: Array<string | undefined> = [];
   const prompts: unknown[] = [];
   const wakeAll = () => { for (const wake of wakers.splice(0)) wake(); };
 
@@ -53,6 +57,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     end: () => { queue.push(null); wakeAll(); },
     released: () => released,
     stopped,
+    backgrounded,
     prompts,
     queries: () => queries,
     lastOptions: () => lastOptions,
@@ -84,6 +89,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     return Object.assign(iterator, {
       interrupt: async () => {},
       stopTask: async (taskId: string) => { stopped.push(taskId); },
+      backgroundTasks: async (toolUseId?: string) => { backgrounded.push(toolUseId); return toolUseId !== 'gone'; },
     });
   };
 
@@ -354,4 +360,22 @@ test('artifact tools are switched on for SDK sessions unless the environment say
       process.env.CLAUDE_CODE_ARTIFACT = previous;
     }
   }
+});
+
+test('a foreground task of the live turn is sent to the background through the CLI', async () => {
+  await withRun(async ({ script }) => {
+    script.emit(init());
+    script.emit(toolUse('toolu_fg', 'Agent', { prompt: 'long job', subagent_type: 'general-purpose' }));
+    script.emit(taskStarted('a1', 'toolu_fg', 'local_agent'));
+    await settle();
+
+    assert.equal(await backgroundClaudeSDKTasks(SESSION_ID, 'toolu_fg'), true);
+    assert.deepEqual(script.backgrounded, ['toolu_fg'], 'the id of the blocking call reaches the CLI');
+    assert.equal(await backgroundClaudeSDKTasks(SESSION_ID), true, 'without an id every foreground task goes');
+    assert.equal(await backgroundClaudeSDKTasks(SESSION_ID, 'gone'), false, 'the CLI says when nothing matched');
+  });
+});
+
+test('a session without a live process has nothing to send to the background', async () => {
+  assert.equal(await backgroundClaudeSDKTasks('no-such-session', 'toolu_fg'), false);
 });

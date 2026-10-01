@@ -390,7 +390,19 @@
     "backgroundCommand": "Command",
     "stopTask": "Stop",
     "taskRowNotLoaded": "Launched earlier in this conversation; click to load it",
-    "taskOfAgent": "Launched by one of this session's agents"
+    "taskOfAgent": "Launched by one of this session's agents",
+    "runningAgents": "Running agents",
+    "agentsRunningCount_one": "{{count}} agent running",
+    "agentsRunningCount_other": "{{count}} agents running",
+    "agentsFinishedCount_one": "{{count}} agent finished",
+    "agentsFinishedCount_other": "{{count}} agents finished",
+    "agentsFinishedShort": "{{count}} finished",
+    "clearFinishedAgents": "Clear finished agents",
+    "agentTranscript": "Agent transcript",
+    "locateAgent": "Show in conversation",
+    "closeAgentTranscript": "Close",
+    "sendToBackground": "Run in background",
+    "sendToBackgroundHint": "Run in background: the conversation is free again while it works, and the result comes back when it finishes"
   },
   "cancel": "Cancel"
 }

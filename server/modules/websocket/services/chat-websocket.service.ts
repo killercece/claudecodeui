@@ -74,6 +74,8 @@ export type ProviderRuntimeGateway = {
   ): Promise<unknown>;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
   stopBackgroundTask(provider: LLMProvider, sessionId: string, taskId: string): Promise<boolean>;
+  /** Sends the session's foreground task (or all of them) to the background; false when none matched. */
+  backgroundTasks(provider: LLMProvider, sessionId: string, toolUseId?: string): Promise<boolean>;
   /** Whether a provider runtime still holds background work for the session after its turn ended. */
   hasBackgroundWork(sessionId: string): boolean;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
@@ -441,6 +443,48 @@ async function handleChatAbort(
 }
 
 /**
+ * Handles `chat.background-task`: sends a foreground task of a session's running
+ * turn — a subagent or a command the turn is blocked on — to the background.
+ * The blocked tool call then returns at once, the turn can end, and the session
+ * takes messages again while the task keeps running. Names one task by the
+ * `toolUseId` of the call that started it, or every foreground task when absent.
+ * The provider reports the new state on the session's stream, so nothing is
+ * echoed back on success.
+ */
+async function handleChatBackgroundTask(
+  ws: WebSocket,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies
+): Promise<void> {
+  const sessionId = readRequiredSessionId(data);
+  if (!sessionId) {
+    sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.background-task requires a sessionId.');
+    return;
+  }
+
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session) {
+    sendProtocolError(ws, 'SESSION_NOT_FOUND', `Session "${sessionId}" was not found.`, sessionId);
+    return;
+  }
+
+  const toolUseId = typeof data.toolUseId === 'string' && data.toolUseId.trim() ? data.toolUseId.trim() : undefined;
+  const backgrounded = await dependencies.runtime.backgroundTasks(
+    session.provider as LLMProvider,
+    sessionId,
+    toolUseId,
+  );
+  if (!backgrounded) {
+    sendProtocolError(
+      ws,
+      'NO_FOREGROUND_TASK',
+      `Session "${sessionId}" has no foreground task to send to the background.`,
+      sessionId,
+    );
+  }
+}
+
+/**
  * Handles `chat.stop-task`: stops one background task of a session — an
  * agent, a workflow or a backgrounded command that is still going after its
  * turn ended. Unlike `chat.abort` there is no run to consult: the task lives
@@ -581,6 +625,7 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  * - `chat.send`                { sessionId, content, options? }
  * - `chat.abort`               { sessionId }
  * - `chat.stop-task`           { sessionId, taskId }
+ * - `chat.background-task`    { sessionId, toolUseId? }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
  *
@@ -686,6 +731,9 @@ export function handleChatConnection(
           return;
         case 'chat.stop-task':
           await handleChatStopTask(ws, data, dependencies);
+          return;
+        case 'chat.background-task':
+          await handleChatBackgroundTask(ws, data, dependencies);
           return;
         case 'chat.subscribe':
           handleChatSubscribe(ws, data, dependencies);

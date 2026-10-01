@@ -267,5 +267,19 @@
       "closeSidebar": "Masquer la barre latérale",
       "resizeSidebar": "Redimensionner la barre latérale"
     }
+  },
+  "workflow": {
+    "runningAgents": "Agents en cours",
+    "agentsRunningCount_one": "{{count}} agent en cours",
+    "agentsRunningCount_other": "{{count}} agents en cours",
+    "agentsFinishedCount_one": "{{count}} agent terminé",
+    "agentsFinishedCount_other": "{{count}} agents terminés",
+    "agentsFinishedShort": "{{count}} terminé(s)",
+    "clearFinishedAgents": "Effacer les agents terminés",
+    "agentTranscript": "Transcript de l'agent",
+    "locateAgent": "Afficher dans la conversation",
+    "closeAgentTranscript": "Fermer",
+    "sendToBackground": "Passer en arrière-plan",
+    "sendToBackgroundHint": "Passer en arrière-plan : la conversation est de nouveau libre pendant qu'il travaille, et le résultat revient quand il a fini"
   }
 }
