@@ -30,6 +30,7 @@ import { taskmasterRoutes } from './modules/taskmaster/index.js';
 import { commandsRoutes } from './modules/commands/index.js';
 import { settingsRoutes } from './modules/settings/index.js';
 import { createSystemModule } from './modules/system/index.js';
+import { createUsageModule } from './modules/usage/index.js';
 import { createAgentModule } from './modules/agent/index.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
 import notificationRoutes from './modules/notifications/notifications.routes.js';
@@ -179,6 +180,9 @@ app.use('/api/commands', authenticateToken, commandsRoutes);
 app.use('/api/settings', authenticateToken, settingsRoutes);
 
 app.use('/api/system', authenticateToken, systemRoutes);
+
+// Claude plan usage (5 h session and weekly limits)
+app.use('/api/usage', authenticateToken, createUsageModule());
 
 app.use('/api/notifications', authenticateToken, notificationRoutes);
 

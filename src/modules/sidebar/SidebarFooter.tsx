@@ -3,6 +3,7 @@ import type { TFunction } from 'i18next';
 
 import { IS_PLATFORM } from '@/shared/utils';
 import type { ReleaseInfo } from '@/shared/types';
+import SidebarUsage from '@/modules/sidebar/SidebarUsage';
 
 const GITHUB_REPO_URL = 'https://github.com/siteboon/claudecodeui';
 
@@ -94,7 +95,11 @@ export default function SidebarFooter({
         </>
       )}
 
-      {/* Community + Settings */}
+      {/* Claude plan limits, always visible */}
+      <div className="nav-divider" />
+      <SidebarUsage t={t} />
+
+      {/* Settings */}
       <div className="nav-divider" />
 
       {/* Desktop settings */}

@@ -567,6 +567,10 @@ export const api = {
   system: {
     update: () => post('/api/system/update'),
   },
+
+  usage: {
+    live: () => get('/api/usage/live'),
+  },
 };
 
 // ---------------------------
