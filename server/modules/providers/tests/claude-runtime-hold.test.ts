@@ -8,6 +8,7 @@ import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-s
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
   listClaudeSDKBackgroundWork,
+  listTasksStoppedByTurn,
   queryClaudeSDK,
   stopClaudeSDKTask,
 } from '@/modules/providers/list/claude/claude-runtime.provider.js';
@@ -91,6 +92,7 @@ async function withRun(
     script: Scripted;
     sent: NormalizedMessage[];
     done: Promise<unknown>;
+    cwd: string;
     /** Sends another message to the same session, with a writer of its own like a new chat run has. */
     ask: (command: string, extraOptions?: Record<string, unknown>) => AskedTurn;
   }) => Promise<void>,
@@ -119,7 +121,7 @@ async function withRun(
         sent: askedSent,
       };
     };
-    await runTest({ script, sent, done, ask });
+    await runTest({ script, sent, done, ask, cwd });
     script.end();
     await done;
   } finally {
@@ -276,16 +278,51 @@ test('once the background work has finished the next message starts a fresh proc
   });
 });
 
-test('a turn asking for different settings does not join the held process', async () => {
+test('a turn that would replace the held process is refused until the user confirms', async () => {
+  await withRun(async ({ script, ask, cwd }) => {
+    launchHeldWorkflow(script);
+    await settle();
+
+    // The check the client runs before sending: a model change cannot join the live process.
+    assert.deepEqual(listTasksStoppedByTurn(SESSION_ID, { cwd, model: 'another-model' }).map((task) => task.taskId), ['wf1']);
+    assert.deepEqual(listTasksStoppedByTurn(SESSION_ID, { cwd }), [], 'the same settings stop nothing');
+
+    const turn = ask('switch model', { model: 'another-model' });
+    await turn.done;
+
+    assert.equal(script.queries(), 1, 'nothing was started');
+    assert.equal(script.released(), false, 'the workflow keeps running');
+    assert.ok(turn.sent.some((message) => message.kind === 'error'), 'the user is told why');
+    assert.ok(turn.sent.some((message) => message.kind === 'complete'), 'and the run ends instead of hanging');
+    assert.deepEqual(listClaudeSDKBackgroundWork().map((entry) => entry.tasks.map((task) => task.taskId)), [['wf1']]);
+  });
+});
+
+test('a confirmed turn replaces the held process', async () => {
   await withRun(async ({ script, ask }) => {
     launchHeldWorkflow(script);
     await settle();
 
-    const turn = ask('switch model', { model: 'another-model' });
+    const turn = ask('switch model', { model: 'another-model', confirmBackgroundStop: true });
     await settle();
     assert.equal(script.queries(), 2, 'the live process cannot change model, so a new one is started');
+    assert.equal(script.released(), true, 'and the old one is let go');
     script.end();
     script.end();
     await turn.done;
+  });
+});
+
+test('editing a message never joins the held process, whatever the settings', async () => {
+  await withRun(async ({ script, ask, cwd }) => {
+    launchHeldWorkflow(script);
+    await settle();
+
+    assert.deepEqual(listTasksStoppedByTurn(SESSION_ID, { cwd, resumeAnchorId: 'uuid-1' }).map((task) => task.taskId), ['wf1']);
+    const refused = ask('edited text', { resumeAnchorId: 'uuid-1' });
+    await refused.done;
+    assert.equal(script.queries(), 1, 'a rewind is not delivered to the running process');
+    assert.ok(refused.sent.some((message) => message.kind === 'error'));
+    assert.equal(script.prompts.length, 1, 'the edited text never reached stdin');
   });
 });

@@ -4,6 +4,7 @@ import { providerAuthService } from '@/modules/providers/services/provider-auth.
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
+import { providerRuntimeService } from '@/modules/providers/services/provider-runtime.service.js';
 import { providerTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
@@ -427,6 +428,24 @@ const parseBoundedIntegerQuery = <T extends number | null>(
   return parsed;
 };
 
+/**
+ * Reads the body of a send-impact check: the options the turn would run with, and
+ * whether it edits an earlier message (which rewinds the conversation).
+ */
+const parseSendImpactPayload = (payload: unknown): { options: Record<string, unknown>; rewind: boolean } => {
+  if (!payload || typeof payload !== 'object') {
+    throw new AppError('Request body must be an object.', {
+      code: 'INVALID_REQUEST_BODY',
+      statusCode: 400,
+    });
+  }
+  const body = payload as Record<string, unknown>;
+  const options = body.options && typeof body.options === 'object' && !Array.isArray(body.options)
+    ? body.options as Record<string, unknown>
+    : {};
+  return { options, rewind: body.rewind === true };
+};
+
 const parseSessionModelPayload = (payload: unknown): string => {
   if (!payload || typeof payload !== 'object') {
     throw new AppError('Request body must be an object.', {
@@ -598,6 +617,25 @@ router.get(
       requestedModel,
     });
     res.json(createApiSuccessResponse(result));
+  }),
+);
+
+/**
+ * Tells the client, before it sends, which of the session's background tasks the
+ * turn would stop. A turn that can join the live process stops nothing; changing
+ * model, permission mode, effort or directory, or editing a message, does.
+ */
+router.post(
+  '/:provider/sessions/:sessionId/send-impact',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    const sessionId = parseSessionId(req.params.sessionId);
+    const { options, rewind } = parseSendImpactPayload(req.body);
+    const tasks = providerRuntimeService.tasksStoppedByTurn(provider, sessionId, {
+      ...options,
+      ...(rewind ? { resumeFromScratch: true } : {}),
+    });
+    res.json(createApiSuccessResponse({ tasks }));
   }),
 );
 

@@ -908,6 +908,46 @@ function attachSignature(options) {
 }
 
 /**
+ * Whether a turn with these options can be fed to the process already held for its
+ * session. Editing a message rewinds the conversation (`resumeSessionAt`), which only
+ * a fresh process can do, and different permission mode, model, effort or cwd cannot
+ * be applied to a running one.
+ * @param {Object} session - The session's activeSessions entry
+ * @param {Object} options - Query options of the turn
+ * @returns {boolean} True when the held process can take the turn
+ */
+function canJoinHeldRun(session, options) {
+  const handle = session?.attachHandle;
+  if (!handle || session.status !== 'active') {
+    return false;
+  }
+  if (options.resumeAnchorId || options.resumeFromScratch) {
+    return false;
+  }
+  return handle.signature === attachSignature(options) && handle.canAttach();
+}
+
+/**
+ * The background tasks a turn with these options would stop: those of the live
+ * process it would have to replace. Empty when there is nothing running, or when
+ * the turn can join the process and so stops nothing.
+ * @param {string} sessionId - App session id
+ * @param {Record<string, any>} options - Query options the turn would run with
+ * @returns {Array<import('@/shared/types.js').BackgroundTaskSummary>} Tasks that would be stopped
+ */
+function listTasksStoppedByTurn(sessionId, options = {}) {
+  const session = sessionId ? getSession(sessionId) : undefined;
+  if (!session || session.status !== 'active') {
+    return [];
+  }
+  const tasks = backgroundWork.list().find((entry) => entry.sessionId === sessionId)?.tasks ?? [];
+  if (tasks.length === 0 || canJoinHeldRun(session, options)) {
+    return [];
+  }
+  return tasks;
+}
+
+/**
  * Hands a turn to the process already held open for its session, when there is one.
  *
  * The process is held after a turn that left background work running. Starting a
@@ -930,10 +970,7 @@ async function tryAttachToHeldRun(command, options, ws) {
 
   const existing = getSession(sessionId);
   const handle = existing?.attachHandle;
-  if (!existing || existing.status !== 'active' || !handle) {
-    return false;
-  }
-  if (handle.signature !== attachSignature(options) || !handle.canAttach()) {
+  if (!canJoinHeldRun(existing, options)) {
     return false;
   }
 
@@ -946,7 +983,7 @@ async function tryAttachToHeldRun(command, options, ws) {
   }
 
   // The process may have settled or been replaced while attachments were read.
-  if (getSession(sessionId) !== existing || !handle.canAttach()) {
+  if (getSession(sessionId) !== existing || !canJoinHeldRun(existing, options)) {
     return false;
   }
 
@@ -975,6 +1012,20 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // when that happens — so a user coming back to ask for a status report would
   // cut off the very work they are asking about.
   if (await tryAttachToHeldRun(command, options, ws)) {
+    return;
+  }
+
+  // Past this point the turn replaces the live process, which stops the background
+  // work it holds. That is never done silently: the client has to have said so.
+  const wouldStop = options.confirmBackgroundStop ? [] : listTasksStoppedByTurn(sessionId, options);
+  if (wouldStop.length > 0) {
+    ws.send(createNormalizedMessage({
+      kind: 'error',
+      content: `This message would stop ${wouldStop.length} background task(s) still running in this session, so it was not sent. Confirm to send it anyway.`,
+      sessionId: sessionId || null,
+      provider: 'claude'
+    }));
+    ws.send(createCompleteMessage({ provider: 'claude', sessionId: sessionId || null, exitCode: 1 }));
     return;
   }
 
@@ -1617,6 +1668,7 @@ export const claudeRuntime = {
   },
   listBackgroundWork: listClaudeSDKBackgroundWork,
   stopBackgroundTask: stopClaudeSDKTask,
+  tasksStoppedByTurn: listTasksStoppedByTurn,
 };
 
 // Export public API
@@ -1624,6 +1676,7 @@ export {
   queryClaudeSDK,
   abortClaudeSDKSession,
   listClaudeSDKBackgroundWork,
+  listTasksStoppedByTurn,
   stopClaudeSDKTask,
   isClaudeSDKSessionActive,
   getClaudeSDKSessionStartTime,

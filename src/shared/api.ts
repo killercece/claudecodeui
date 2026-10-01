@@ -401,6 +401,12 @@ export const api = {
       get(`/api/providers/sessions/${encodeURIComponent(sessionId)}/token-usage`),
     sessionActiveModel: (provider: string, sessionId: string) =>
       get(`/api/providers/${provider}/sessions/${encodeURIComponent(sessionId)}/active-model`),
+    // Which of the session's background tasks a send with these options would stop.
+    sessionSendImpact: (provider: string, sessionId: string, options: unknown, rewind: boolean) =>
+      post(`/api/providers/${provider}/sessions/${encodeURIComponent(sessionId)}/send-impact`, {
+        options,
+        rewind,
+      }),
     setSessionActiveModel: (provider: string, sessionId: string, model: string) =>
       post(`/api/providers/${provider}/sessions/${encodeURIComponent(sessionId)}/active-model`, {
         model,

@@ -253,7 +253,8 @@
       "agent": "Agent {{description}}",
       "command": "Command {{description}}",
       "count": "{{count}} tasks",
-      "sendAnyway": "This session still has background work running:\n{{work}}\n\nA new message starts a new turn, which stops that work; anything it has not reported yet is lost. Send anyway?"
+      "sendAnyway": "This message needs a new process, which stops the background work still running:\n{{work}}\n\nAnything it has not reported yet is lost. Send anyway?",
+      "stopAnyway": "Stopping also stops the background work still running:\n{{work}}\n\nAnything it has not reported yet is lost. Stop anyway?"
     },
     "controls": {
       "stopGeneration": "Stop Generation",

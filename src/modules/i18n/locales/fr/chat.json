@@ -206,6 +206,13 @@
     },
     "providers": {
       "assistant": "Assistant"
+    },
+    "backgroundTask": {
+      "workflow": "Workflow {{name}}",
+      "agent": "Agent {{description}}",
+      "command": "Commande {{description}}",
+      "sendAnyway": "Ce message nécessite un nouveau processus, ce qui arrête le travail en arrière-plan encore en cours :\n{{work}}\n\nCe qu'il n'a pas encore rapporté sera perdu. Envoyer quand même ?",
+      "stopAnyway": "Arrêter arrête aussi le travail en arrière-plan encore en cours :\n{{work}}\n\nCe qu'il n'a pas encore rapporté sera perdu. Arrêter quand même ?"
     }
   },
   "projectSelection": {

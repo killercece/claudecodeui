@@ -51,6 +51,13 @@ export interface IProviderRuntime {
    * settled, or the id was never one of its own.
    */
   stopBackgroundTask?(sessionId: string, taskId: string): Promise<boolean>;
+  /**
+   * The background tasks that sending a turn with these options to the session
+   * would stop, because the turn has to replace the live process they run under.
+   * Empty when nothing runs or when the turn can join the process instead. A
+   * runtime that never holds background work leaves this undefined.
+   */
+  tasksStoppedByTurn?(sessionId: string, options: AnyRecord): BackgroundTaskSummary[];
 }
 
 /**

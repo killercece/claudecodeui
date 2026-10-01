@@ -4,6 +4,7 @@ import { sessionsService } from '@/modules/providers/services/sessions.service.j
 import type { IProvider } from '@/shared/interfaces.js';
 import type {
   AnyRecord,
+  BackgroundTaskSummary,
   LLMProvider,
   ProviderPermissionDecision,
   ProviderRunFunction,
@@ -95,6 +96,12 @@ export function createProviderRuntimeService(
       // A runtime that never holds background work has no task to stop.
       const { runtime } = dependencies.resolveProvider(providerName);
       return Boolean(await runtime.stopBackgroundTask?.(sessionId, taskId));
+    },
+
+    /** The session's background tasks a turn with these options would stop; empty when it stops none. */
+    tasksStoppedByTurn(providerName: LLMProvider, sessionId: string, options: Record<string, unknown>): BackgroundTaskSummary[] {
+      const { runtime } = dependencies.resolveProvider(providerName);
+      return runtime.tasksStoppedByTurn?.(sessionId, options) ?? [];
     },
 
     hasBackgroundWork(sessionId: string): boolean {

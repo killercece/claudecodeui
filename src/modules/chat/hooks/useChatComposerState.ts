@@ -12,10 +12,10 @@ import type {
 import { useDropzone } from 'react-dropzone';
 import { useTranslation } from 'react-i18next';
 
-import { api } from '@/shared/api';
+import { api, readApiJson } from '@/shared/api';
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
-import type { CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
+import type { BackgroundTaskSummary, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
 import {
   clearQueuedMessage,
@@ -865,21 +865,38 @@ export function useChatComposerState({
         });
       }
 
-      // A new turn replaces the CLI process a session's background work runs
-      // under: the agents, workflows and commands it still has going are
-      // stopped, or finish where nothing is listening. Sending is the user's
-      // call, but not one to make for them.
+      // A message sent to a session with background work running joins the live
+      // process and stops nothing. Changing the model or permission mode, or
+      // editing a message, needs a new process, which stops that work: the server
+      // says whether this send does, and the user decides before anything is lost.
+      const sendOptions = queuedSubmission?.options ?? buildSendOptions(messageContent);
+      let confirmedBackgroundStop = false;
       const backgroundActivity = processingSessionsRef.current?.get(targetSessionId);
       if (backgroundActivity?.background) {
-        const work = ownBackgroundTasks(backgroundActivity.tasks ?? [])
-          .map((task) => `• ${describeBackgroundTask(task, t)}`)
-          .join('\n');
-        const confirmed = window.confirm(t('claudeStatus.backgroundTask.sendAnyway', {
-          work,
-          defaultValue: 'This session still has background work running:\n{{work}}\n\nA new message starts a new turn, which stops that work; anything it has not reported yet is lost. Send anyway?',
-        }));
-        if (!confirmed) {
-          return;
+        let stoppedTasks: BackgroundTaskSummary[];
+        try {
+          const impact = await readApiJson<{ data?: { tasks?: BackgroundTaskSummary[] } }>(
+            await api.providers.sessionSendImpact(provider, targetSessionId, sendOptions, Boolean(editingAnchorId)),
+          );
+          stoppedTasks = impact.data?.tasks ?? [];
+        } catch {
+          // Without the server's answer assume the worst: asking once too often costs a click, not the work.
+          stoppedTasks = backgroundActivity.tasks ?? [];
+        }
+
+        if (stoppedTasks.length > 0) {
+          const own = ownBackgroundTasks(stoppedTasks);
+          const work = (own.length > 0 ? own : stoppedTasks)
+            .map((task) => `• ${describeBackgroundTask(task, t)}`)
+            .join('\n');
+          const confirmed = window.confirm(t('claudeStatus.backgroundTask.sendAnyway', {
+            work,
+            defaultValue: 'This message needs a new process, which stops the background work still running:\n{{work}}\n\nAnything it has not reported yet is lost. Send anyway?',
+          }));
+          if (!confirmed) {
+            return;
+          }
+          confirmedBackgroundStop = true;
         }
       }
 
@@ -920,8 +937,10 @@ export function useChatComposerState({
         ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
         content: messageContent,
         options: {
-          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
+          ...sendOptions,
           attachments: uploadedAttachments,
+          // The user accepted that this send stops the background work.
+          ...(confirmedBackgroundStop ? { confirmBackgroundStop: true } : {}),
         },
       });
       setEditingAnchorId(null);
@@ -1219,13 +1238,26 @@ export function useChatComposerState({
       return;
     }
 
+    // Stopping interrupts the process, which stops the background work with it.
+    const runningWork = ownBackgroundTasks(processingSessionsRef.current?.get(targetSessionId)?.tasks ?? []);
+    if (runningWork.length > 0) {
+      const work = runningWork.map((task) => `• ${describeBackgroundTask(task, t)}`).join('\n');
+      const confirmed = window.confirm(t('claudeStatus.backgroundTask.stopAnyway', {
+        work,
+        defaultValue: 'Stopping also stops the background work still running:\n{{work}}\n\nAnything it has not reported yet is lost. Stop anyway?',
+      }));
+      if (!confirmed) {
+        return;
+      }
+    }
+
     // The backend resolves the provider from the session row, so no provider
     // field is needed here.
     sendMessage({
       type: 'chat.abort',
       sessionId: targetSessionId,
     });
-  }, [canAbortSession, currentSessionId, selectedSession?.id, sendMessage]);
+  }, [canAbortSession, currentSessionId, selectedSession?.id, sendMessage, t]);
 
   const handleGrantToolPermission = useCallback(
     (suggestion: { entry: string; toolName: string }) => {
