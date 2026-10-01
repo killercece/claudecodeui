@@ -79,6 +79,54 @@ const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEO
 // overrides it.
 const BG_WAIT_CEILING_MS = parseInt(process.env.CLAUDE_BG_WAIT_CEILING_MS, 10) || 12 * 60 * 60 * 1000;
 
+/**
+ * How long a session's process is kept alive after a turn that left nothing running,
+ * so the next message joins it instead of starting a new one (3 hours, like the VS Code
+ * extension). Besides saving a start per message, it is what lets one Remote Control
+ * session live as long as the conversation instead of one per message. 0 restores the
+ * old behaviour: the process exits as soon as the turn ends. Read at each use so a
+ * test or an operator can change it without restarting.
+ * @returns {number} Milliseconds, 0 when the keep-alive is off
+ */
+function idleKeepAliveMs() {
+  const raw = process.env.CLAUDE_IDLE_KEEP_ALIVE_MS;
+  if (raw === undefined || raw === '') {
+    return 3 * 60 * 60 * 1000;
+  }
+  const parsed = parseInt(raw, 10);
+  return Number.isNaN(parsed) ? 3 * 60 * 60 * 1000 : Math.max(0, parsed);
+}
+
+/**
+ * How many idle processes may be kept at once: each one is a whole Claude process
+ * (about 200 MB), so the oldest idle one is released when the count goes over.
+ * @returns {number} Maximum number of idle processes
+ */
+function maxIdleProcesses() {
+  const parsed = parseInt(process.env.CLAUDE_MAX_IDLE_PROCESSES, 10);
+  return Number.isNaN(parsed) || parsed < 1 ? 6 : parsed;
+}
+
+/**
+ * Which idle processes to release to stay within the cap: the longest idle first.
+ * @param {Map<string, { since: number }>} holds - Idle processes by session key
+ * @param {number} max - How many may stay
+ * @returns {string[]} Session keys to release, oldest first
+ */
+function pickIdleToRelease(holds, max) {
+  const excess = holds.size - max;
+  if (excess <= 0) {
+    return [];
+  }
+  return [...holds.entries()]
+    .sort((left, right) => left[1].since - right[1].since)
+    .slice(0, excess)
+    .map(([key]) => key);
+}
+
+// Sessions whose process is idle (turn over, nothing running), keyed like activeSessions.
+const idleHolds = new Map();
+
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
 // Ultracode is a session-scoped setting rather than an SDK effort level: it pairs xhigh
@@ -930,6 +978,39 @@ async function loadMcpConfig(cwd) {
 }
 
 /**
+ * Starts Remote Control for a process, so the session shows up in claude.ai and the
+ * Claude apps. The CLI does not do it itself when an SDK drives it: it reports in its
+ * initialization answer whether the user's settings and policy want it
+ * (`remote_control_auto_enable`) and leaves the host to connect, as the VS Code
+ * extension does. Done once per process; because the process now lives for the
+ * conversation (see idleKeepAliveMs) that is one claude.ai session per conversation,
+ * and it is skipped when the keep-alive is off, where it would make one per message.
+ * CLOUDCLI_REMOTE_CONTROL=off disables it. Failures are logged and never reach the turn.
+ * @param {Object} queryInstance - The SDK query of the process
+ * @param {string} nameSource - Text the claude.ai session is named after (summary or first prompt)
+ * @returns {Promise<void>}
+ */
+async function startRemoteControl(queryInstance, nameSource) {
+  if (process.env.CLOUDCLI_REMOTE_CONTROL === 'off' || idleKeepAliveMs() === 0) {
+    return;
+  }
+  if (typeof queryInstance?.initializationResult !== 'function' || typeof queryInstance?.enableRemoteControl !== 'function') {
+    return;
+  }
+  try {
+    const init = await queryInstance.initializationResult();
+    if (!init?.remote_control_auto_enable || init.remote_control_available === false) {
+      return;
+    }
+    const name = String(nameSource || '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'CloudCLI session';
+    await queryInstance.enableRemoteControl(true, name);
+    console.log('[Claude SDK] Remote Control enabled for a session process');
+  } catch (error) {
+    console.warn('[Claude SDK] Could not enable Remote Control:', error?.message || error);
+  }
+}
+
+/**
  * What a live CLI process was started with and cannot change while it runs. A turn
  * asking for different settings gets a process of its own instead of joining.
  * @param {Object} options - Query options of a turn
@@ -1104,6 +1185,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // True while the process is being held open for background work, so a later
   // `result` can be recognised as that work reporting back.
   let heldForBackgroundWork = false;
+  // True while the turn is over, nothing is running and the process waits for the
+  // session's next message (see idleKeepAliveMs). Cleared when a turn joins it.
+  let heldIdle = false;
   // Set once a turn publishes a budget read from an assistant message, so the
   // turn-ending `result` is only mined for usage when nothing better arrived.
   let assistantBudgetSent = false;
@@ -1114,18 +1198,46 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     getSession(sessionKey())?.releaseInput?.();
   }
 
-  // Arms (or re-arms) the idle countdown that eventually closes stdin.
+  // Arms (or re-arms) the countdown that eventually closes stdin. A process that is only
+  // waiting for the next message gets the keep-alive delay; one holding background work,
+  // or in the middle of a turn, gets the long ceiling so it is never cut under a task.
   const scheduleRelease = () => {
     if (idleReleaseTimer) {
       clearTimeout(idleReleaseTimer);
       idleReleaseTimer = null;
     }
+    const delay = heldIdle && !heldForBackgroundWork ? idleKeepAliveMs() : BG_WAIT_CEILING_MS;
     idleReleaseTimer = setTimeout(() => {
       idleReleaseTimer = null;
       releasePromptStream();
-    }, BG_WAIT_CEILING_MS);
+    }, delay);
     // Never let the hold keep the server process alive on its own.
     idleReleaseTimer.unref?.();
+  };
+
+  // Records the process as idle for the cap on idle processes, releasing the longest
+  // idle ones when there are too many.
+  // The entry carries this run's own release function, so a run that ends later cannot
+  // remove the entry of a newer process of the same session.
+  const idleRelease = () => releasePromptStream();
+  const registerIdle = () => {
+    const key = sessionKey();
+    if (!key) {
+      return;
+    }
+    idleHolds.set(key, { since: Date.now(), release: idleRelease });
+    for (const stale of pickIdleToRelease(idleHolds, maxIdleProcesses())) {
+      const hold = idleHolds.get(stale);
+      idleHolds.delete(stale);
+      console.log(`[Claude SDK] Too many idle processes: releasing the one of session ${stale}`);
+      hold?.release();
+    }
+  };
+  const unregisterIdle = () => {
+    const key = sessionKey();
+    if (key && idleHolds.get(key)?.release === idleRelease) {
+      idleHolds.delete(key);
+    }
   };
 
   // Turns that joined this process (see tryAttachToHeldRun) wait here until their
@@ -1303,7 +1415,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // How a later turn joins this process while it is held for background work.
     const attachHandle = {
       signature: attachSignature(options),
-      canAttach: () => heldForBackgroundWork
+      canAttach: () => (heldForBackgroundWork || heldIdle)
         && !supersededInstances.has(queryInstance)
         && !abortedSessionIds.has(sessionKey()),
       // Feeds the message to the live CLI and points the output at the new turn's
@@ -1316,6 +1428,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         ws = nextWs;
         turnCompleteSent = false;
         assistantBudgetSent = false;
+        // A turn is running again: the process is no longer idle, and the long ceiling
+        // applies until its `result` says what to do with the process next.
+        heldIdle = false;
+        unregisterIdle();
         // The user is back: the silence countdown starts over.
         if (idleReleaseTimer) {
           scheduleRelease();
@@ -1328,6 +1444,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     if (sessionKey()) {
       addSession(sessionKey(), queryInstance, ws, releasePromptStream, attachHandle);
     }
+
+    // Remote Control, once for this process (the answer arrives in the background).
+    void startRemoteControl(queryInstance, sessionSummary || command);
 
     // Process streaming messages
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
@@ -1403,7 +1522,14 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         && !backgroundWork.hasOutstanding(sessionKey())
       ) {
         heldForBackgroundWork = false;
-        releasePromptStream();
+        if (idleKeepAliveMs() > 0) {
+          // The process stays for the session's next message, like after any turn.
+          heldIdle = true;
+          scheduleRelease();
+          registerIdle();
+        } else {
+          releasePromptStream();
+        }
       }
 
       if (message.type === 'result') {
@@ -1456,11 +1582,21 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         sawTaskEventThisTurn = false;
         if (holdForTurn) {
           heldForBackgroundWork = true;
+          heldIdle = false;
+          unregisterIdle();
           scheduleRelease();
-        } else {
-          // Either nothing was backgrounded, or the background work just
-          // reported in — let the CLI exit now, as it always has.
+        } else if (idleKeepAliveMs() > 0 && !abortPending) {
+          // Nothing is running any more (nothing was backgrounded, or the background
+          // work just reported in). Keep the process for the session's next message,
+          // which joins it, for as long as the keep-alive allows.
           heldForBackgroundWork = false;
+          heldIdle = true;
+          scheduleRelease();
+          registerIdle();
+        } else {
+          // Keep-alive off: let the CLI exit now, as it always has.
+          heldForBackgroundWork = false;
+          heldIdle = false;
           releasePromptStream();
         }
       } else if (idleReleaseTimer) {
@@ -1549,6 +1685,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       idleReleaseTimer = null;
     }
     releasePromptStream();
+    unregisterIdle();
     // A turn that joined this process must not wait on one that is gone.
     settleAttachedTurns();
   }
@@ -1733,6 +1870,7 @@ export {
   abortClaudeSDKSession,
   listClaudeSDKBackgroundWork,
   listTasksStoppedByTurn,
+  pickIdleToRelease,
   stopClaudeSDKTask,
   backgroundClaudeSDKTasks,
   isClaudeSDKSessionActive,

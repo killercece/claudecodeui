@@ -9,6 +9,7 @@ import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude
 import {
   listClaudeSDKBackgroundWork,
   listTasksStoppedByTurn,
+  pickIdleToRelease,
   queryClaudeSDK,
   stopClaudeSDKTask,
   backgroundClaudeSDKTasks,
@@ -22,6 +23,10 @@ import type { NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.j
  * seam is `context.createQuery` — and watch the held prompt stream: the CLI
  * exits when it ends, so "released" is the whole outcome.
  */
+
+// Les tests historiques décrivent le comportement sans maintien du processus au repos ; ceux du
+// maintien le réactivent explicitement (voir withKeepAlive).
+process.env.CLAUDE_IDLE_KEEP_ALIVE_MS = '0';
 
 const SESSION_ID = 'app-hold-session';
 const NATIVE_ID = 'native-hold-session';
@@ -39,6 +44,10 @@ type Scripted = {
   queries: () => number;
   /** The options the runtime handed to the SDK for the latest process it started. */
   lastOptions: () => Record<string, any> | null;
+  /** What the CLI answers to the initialization request (its remote_control_* flags). */
+  initResult: Record<string, unknown>;
+  /** The enableRemoteControl calls the runtime made, as [enabled, name]. */
+  remoteControlCalls: Array<[boolean, string | undefined]>;
 };
 
 /** A stand-in for the SDK query: yields what the test emits, and reads the held prompt to notice its release. */
@@ -49,6 +58,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
   let queries = 0;
   const stopped: string[] = [];
   const backgrounded: Array<string | undefined> = [];
+  const remoteControlCalls: Array<[boolean, string | undefined]> = [];
   const prompts: unknown[] = [];
   const wakeAll = () => { for (const wake of wakers.splice(0)) wake(); };
 
@@ -61,6 +71,8 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     prompts,
     queries: () => queries,
     lastOptions: () => lastOptions,
+    initResult: {},
+    remoteControlCalls,
   };
 
   let lastOptions: Record<string, any> | null = null;
@@ -89,6 +101,8 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     return Object.assign(iterator, {
       interrupt: async () => {},
       stopTask: async (taskId: string) => { stopped.push(taskId); },
+      initializationResult: async () => script.initResult,
+      enableRemoteControl: async (enabled: boolean, name?: string) => { remoteControlCalls.push([enabled, name]); return {}; },
       backgroundTasks: async (toolUseId?: string) => { backgrounded.push(toolUseId); return toolUseId !== 'gone'; },
     });
   };
@@ -108,9 +122,11 @@ async function withRun(
     ask: (command: string, extraOptions?: Record<string, unknown>) => AskedTurn;
   }) => Promise<void>,
   startOptions: Record<string, unknown> = {},
+  prepare?: (script: Scripted) => void,
 ): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
   const { createQuery, script } = createScriptedQuery();
+  prepare?.(script);
   const sent: NormalizedMessage[] = [];
   const writer = { send: (message: NormalizedMessage) => { sent.push(message); }, userId: null };
   const sessions = new ClaudeSessionsProvider({ getLiveRunStartTime: () => null });
@@ -408,4 +424,155 @@ test('thinking summaries are requested so reasoning has text to show, except for
       process.env.CLAUDE_THINKING_DISPLAY = previous;
     }
   }
+});
+
+/** Runs `body` with the idle keep-alive set to `ms`, then puts the environment back. */
+async function withKeepAlive(ms: string, body: () => Promise<void>): Promise<void> {
+  const previous = process.env.CLAUDE_IDLE_KEEP_ALIVE_MS;
+  const previousRc = process.env.CLOUDCLI_REMOTE_CONTROL;
+  process.env.CLAUDE_IDLE_KEEP_ALIVE_MS = ms;
+  delete process.env.CLOUDCLI_REMOTE_CONTROL;
+  try {
+    await body();
+  } finally {
+    process.env.CLAUDE_IDLE_KEEP_ALIVE_MS = previous;
+    if (previousRc === undefined) delete process.env.CLOUDCLI_REMOTE_CONTROL;
+    else process.env.CLOUDCLI_REMOTE_CONTROL = previousRc;
+  }
+}
+
+const wait = (ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+test('a process whose turn left nothing running stays for the next message, which joins it', async () => {
+  await withKeepAlive('60000', async () => {
+    await withRun(async ({ script, sent, ask }) => {
+      script.emit(init());
+      script.emit(result());
+      await settle();
+      assert.ok(sent.some((message) => message.kind === 'complete'), 'the turn is over for the client');
+      assert.equal(script.released(), false, 'the process is kept for the session\'s next message');
+
+      const turn = ask('and then?');
+      await settle();
+      assert.equal(script.queries(), 1, 'the next message does not start another process');
+      assert.equal(script.prompts.length, 2, 'it reached the live process');
+
+      script.emit(result());
+      await turn.done;
+      assert.ok(turn.sent.some((message) => message.kind === 'complete'), 'and completes on its own writer');
+      assert.equal(script.released(), false, 'the process is kept again');
+    });
+  });
+});
+
+test('an idle process is released once the keep-alive has run out', async () => {
+  await withKeepAlive('60', async () => {
+    await withRun(async ({ script }) => {
+      script.emit(init());
+      script.emit(result());
+      await settle();
+      assert.equal(script.released(), false);
+      await wait(160);
+      assert.equal(script.released(), true, 'nobody came back in time: the process exits');
+    });
+  });
+});
+
+test('with the keep-alive off the process exits as soon as the turn ends', async () => {
+  await withKeepAlive('0', async () => {
+    await withRun(async ({ script }) => {
+      script.emit(init());
+      script.emit(result());
+      await settle();
+      assert.equal(script.released(), true);
+    });
+  });
+});
+
+test('a turn asking for another model replaces the idle process', async () => {
+  await withKeepAlive('60000', async () => {
+    await withRun(async ({ script, ask }) => {
+      script.emit(init());
+      script.emit(result());
+      await settle();
+
+      const turn = ask('switch model', { model: 'another-model' });
+      await settle();
+      assert.equal(script.queries(), 2, 'a live process cannot change model: nothing runs, so a new one starts');
+      assert.equal(script.released(), true, 'and the idle one is let go');
+      script.end();
+      script.end();
+      await turn.done;
+    });
+  });
+});
+
+test('pickIdleToRelease keeps the cap and gives up the longest idle first', () => {
+  const holds = new Map([
+    ['recent', { since: 300 }],
+    ['oldest', { since: 100 }],
+    ['middle', { since: 200 }],
+  ]);
+  assert.deepEqual(pickIdleToRelease(holds, 3), [], 'within the cap nothing goes');
+  assert.deepEqual(pickIdleToRelease(holds, 2), ['oldest']);
+  assert.deepEqual(pickIdleToRelease(holds, 1), ['oldest', 'middle']);
+});
+
+test('Remote Control is enabled once per process, named after the first prompt, when the CLI asks for it', async () => {
+  await withKeepAlive('60000', async () => {
+    await withRun(async ({ script, ask }) => {
+      await settle();
+      assert.deepEqual(script.remoteControlCalls, [[true, 'hello']]);
+
+      script.emit(init());
+      script.emit(result());
+      await settle();
+      const turn = ask('a second message');
+      await settle();
+      script.emit(result());
+      await turn.done;
+      assert.equal(script.remoteControlCalls.length, 1, 'the second message joins the process: no second session on claude.ai');
+    }, {}, (script) => { script.initResult = { remote_control_auto_enable: true, remote_control_available: true }; });
+  });
+});
+
+test('Remote Control is left alone when the CLI does not ask for it, policy forbids it, or it is switched off', async () => {
+  await withKeepAlive('60000', async () => {
+    await withRun(async ({ script }) => {
+      await settle();
+      assert.deepEqual(script.remoteControlCalls, [], 'the CLI did not ask');
+    }, {}, (script) => { script.initResult = { remote_control_auto_enable: false, remote_control_available: true }; });
+
+    await withRun(async ({ script }) => {
+      await settle();
+      assert.deepEqual(script.remoteControlCalls, [], 'not available under the account\'s policy');
+    }, {}, (script) => { script.initResult = { remote_control_auto_enable: true, remote_control_available: false }; });
+
+    process.env.CLOUDCLI_REMOTE_CONTROL = 'off';
+    await withRun(async ({ script }) => {
+      await settle();
+      assert.deepEqual(script.remoteControlCalls, [], 'switched off for CloudCLI');
+    }, {}, (script) => { script.initResult = { remote_control_auto_enable: true, remote_control_available: true }; });
+  });
+
+  // Sans maintien du processus, un pont par message serait une session claude.ai par message.
+  await withKeepAlive('0', async () => {
+    await withRun(async ({ script }) => {
+      await settle();
+      assert.deepEqual(script.remoteControlCalls, []);
+    }, {}, (script) => { script.initResult = { remote_control_auto_enable: true, remote_control_available: true }; });
+  });
+});
+
+test('bridge state events from the CLI do not disturb the run', async () => {
+  await withKeepAlive('60000', async () => {
+    await withRun(async ({ script, sent }) => {
+      script.emit(init());
+      script.emit({ type: 'system', subtype: 'bridge_state', state: 'connected', session_id: NATIVE_ID });
+      script.emit(result());
+      await settle();
+      assert.ok(sent.some((message) => message.kind === 'complete'));
+      assert.ok(!sent.some((message) => message.kind === 'error'));
+    });
+  });
 });
