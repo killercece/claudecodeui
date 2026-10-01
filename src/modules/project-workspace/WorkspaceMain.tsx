@@ -12,6 +12,8 @@ import type { AppTab, DirectoryRevealRequest, Project, ProjectSession, SessionEs
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import { useFileOpenResolver } from '@/modules/project-workspace/hooks/useFileOpenResolver';
 import { EditorSidebar, useEditorSidebar } from '@/modules/code-editor';
+import { useSessionTabs } from '@/modules/project-workspace/hooks/useSessionTabs';
+import SessionTabsBar from '@/modules/project-workspace/SessionTabsBar';
 import WorkspaceHeader from '@/modules/project-workspace/WorkspaceHeader';
 import WorkspaceStateView from '@/modules/project-workspace/WorkspaceStateView';
 import WorkspaceErrorBoundary from '@/modules/project-workspace/WorkspaceErrorBoundary';
@@ -33,6 +35,8 @@ type WorkspaceMainProps = {
   newSessionTrigger: number;
   /** Switches the app to another project — used by the git panel's Worktrees view. */
   onProjectSelect: (project: Project) => void;
+  /** Starts a draft session in the given project — used by the session tabs bar. */
+  onNewSession: (project: Project) => void;
   /** Silently re-syncs the sidebar project list after worktree projects change. */
   onProjectsRefresh: () => void;
   /** Persists a new title for a session; resolves false when the backend refuses it. Used by the header's inline rename. */
@@ -56,6 +60,7 @@ function WorkspaceMain({
   externalMessageUpdate,
   newSessionTrigger,
   onProjectSelect,
+  onNewSession,
   onProjectsRefresh,
   onRenameSession,
 }: WorkspaceMainProps) {
@@ -133,6 +138,29 @@ function WorkspaceMain({
   // rewriting the whole palette registry on every render.
   usePaletteOpsRegister({ openFile, openFileInEditor, openDirectory });
 
+  const { tabs, closeTab, moveTab } = useSessionTabs(selectedSession);
+  const activeSessionId = selectedSession?.id ?? null;
+
+  const handleSelectTab = useCallback((id: string) => {
+    setActiveTab('chat');
+    onNavigateToSession(id);
+  }, [onNavigateToSession, setActiveTab]);
+
+  // Fermer l'onglet actif bascule sur son voisin ; sans voisin, on retombe sur une nouvelle session.
+  const handleCloseTab = useCallback((id: string) => {
+    const next = closeTab(id, activeSessionId);
+    if (id !== activeSessionId) return;
+    if (next) {
+      onNavigateToSession(next.id);
+    } else if (selectedProject) {
+      onNewSession(selectedProject);
+    }
+  }, [activeSessionId, closeTab, onNavigateToSession, onNewSession, selectedProject]);
+
+  const handleNewTab = useCallback(() => {
+    if (selectedProject) onNewSession(selectedProject);
+  }, [onNewSession, selectedProject]);
+
   if (isLoading) {
     return <WorkspaceStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
   }
@@ -153,6 +181,15 @@ function WorkspaceMain({
         isMobile={isMobile}
         onMenuClick={onMenuClick}
         onRenameSession={onRenameSession}
+      />
+
+      <SessionTabsBar
+        tabs={tabs}
+        activeId={activeSessionId}
+        onSelect={handleSelectTab}
+        onClose={handleCloseTab}
+        onMove={moveTab}
+        onNew={handleNewTab}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
