@@ -698,6 +698,10 @@ export function startsBackgroundWork(sdkMessage) {
 // `stopped`).
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'killed']);
 
+// Task types the CLI reports with a tool_use id but that are not background work to
+// wait for or stop: `monitor_ws` is an artifact's live-updates subscription.
+const UNTRACKED_TASK_TYPES = new Set(['monitor_ws']);
+
 /**
  * Tracks the background tasks each live session still has outstanding, folded
  * from the `system` task events the SDK stream already carries.
@@ -773,6 +777,14 @@ export function createBackgroundWorkTracker() {
       switch (message.subtype) {
         case 'task_started': {
           if (typeof message.tool_use_id !== 'string') {
+            return;
+          }
+          // Publishing an Artifact opens a websocket that streams the page's live updates
+          // and comments (`monitor_ws`, "live updates for artifact …"). It is a passive
+          // subscription that never ends by itself, not work that outlives the turn:
+          // counting it left every session that published a page showing "N tasks"
+          // forever, holding its process and asking to confirm before a plain message.
+          if (UNTRACKED_TASK_TYPES.has(message.task_type)) {
             return;
           }
           const task = {

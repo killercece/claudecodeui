@@ -131,6 +131,31 @@ test('preserves both UI objects produced by an unchanged task notification', () 
   assert.equal(updated[1]?.content, 'Detailed result');
 });
 
+test('an artifact\'s live-updates subscription never shows as a running background task', () => {
+  // Publishing an Artifact makes the CLI open a monitor_ws task carrying the Artifact call's
+  // tool_use id. It never settles by itself, so it must not turn the call into a "running" task.
+  const artifactCall = message('artifact-call', {
+    kind: 'tool_use',
+    toolId: 'toolu_artifact_1',
+    toolName: 'Artifact',
+    toolInput: { file_path: '/tmp/page.html', description: 'A page' },
+  });
+  const started = message('ws-started', {
+    kind: 'task_status',
+    event: 'started',
+    taskId: 'ws1',
+    toolUseId: 'toolu_artifact_1',
+    taskType: 'monitor_ws',
+    description: 'live updates for artifact https://claude.ai/artifact/abc',
+  });
+  // Later events of the same task do not repeat its type.
+  const progress = message('ws-progress', { kind: 'task_status', event: 'progress', taskId: 'ws1', toolUseId: 'toolu_artifact_1' });
+
+  const rows = normalizedToChatMessages([artifactCall, started, progress]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.taskStatus, undefined);
+});
+
 test('folds the live task events of a background launch onto the tool row that launched it', () => {
   // The four `system` task subtypes the SDK emits for a running workflow,
   // normalized to `task_status` by the server. `updated` names only the task

@@ -184,6 +184,9 @@ function appendCompactionRow(
   return true;
 }
 
+/** Task types the CLI reports with a tool call but that are not work to wait for (see foldTaskStatus). */
+const UNTRACKED_TASK_TYPES = new Set(['monitor_ws']);
+
 /**
  * Merges one live `task_status` event into the task map.
  *
@@ -198,7 +201,15 @@ function foldTaskStatus(
   liveTasksByToolUseId: Map<string, LiveTaskStatus>,
   toolUseIdByTaskId: Map<string, string>,
   lastTaskSourceByToolUseId: Map<string, NormalizedMessage>,
+  ignoredTaskIds: Set<string>,
 ): void {
+  // An artifact's live-updates subscription (`monitor_ws`) is not background work: it
+  // never settles by itself, so showing it left a "running" task on every published
+  // page. Its id is remembered because its later events do not repeat the type.
+  if (msg.taskId && (ignoredTaskIds.has(msg.taskId) || (msg.taskType && UNTRACKED_TASK_TYPES.has(msg.taskType)))) {
+    ignoredTaskIds.add(msg.taskId);
+    return;
+  }
   if (msg.taskId && msg.toolUseId) {
     toolUseIdByTaskId.set(msg.taskId, msg.toolUseId);
   }
@@ -253,9 +264,10 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
   const toolUseIdByTaskId = new Map<string, string>();
   /** Newest event folded per launch, so its cached projection knows to rebuild. */
   const lastTaskSourceByToolUseId = new Map<string, NormalizedMessage>();
+  const ignoredTaskIds = new Set<string>();
   for (const msg of messages) {
     if (msg.kind === 'task_status') {
-      foldTaskStatus(msg, liveTasksByToolUseId, toolUseIdByTaskId, lastTaskSourceByToolUseId);
+      foldTaskStatus(msg, liveTasksByToolUseId, toolUseIdByTaskId, lastTaskSourceByToolUseId, ignoredTaskIds);
       continue;
     }
 

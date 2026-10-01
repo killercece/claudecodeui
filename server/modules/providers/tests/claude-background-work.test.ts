@@ -211,3 +211,20 @@ test('messages that are not task events leave the set untouched', () => {
 
   assert.equal(tracker.has('s1', 't1'), true);
 });
+
+test('an artifact\'s live-updates subscription is not background work', () => {
+  const tracker = createBackgroundWorkTracker();
+  // Shape seen from a real query right after an Artifact is published: a monitor_ws task
+  // carrying the tool_use id of the Artifact call, which never settles on its own.
+  tracker.apply('s1', started('ws1', { task_type: 'monitor_ws', description: 'live updates for artifact https://claude.ai/artifact/abc' }));
+  tracker.apply('s1', started('ws2', { task_type: 'monitor_ws', description: 'live updates for artifact https://claude.ai/artifact/def' }));
+
+  assert.equal(tracker.hasOutstanding('s1'), false, 'two published pages do not make a session "busy"');
+  assert.deepEqual(tracker.list(), []);
+
+  // Real work next to it is still tracked, and settles as usual.
+  tracker.apply('s1', started('a1'));
+  assert.deepEqual(tracker.list().map((entry) => entry.tasks.map((task) => task.taskId)), [['a1']]);
+  tracker.apply('s1', notified('a1', 'completed'));
+  assert.equal(tracker.hasOutstanding('s1'), false);
+});
