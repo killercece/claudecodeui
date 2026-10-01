@@ -29,33 +29,42 @@ type Scripted = {
   end: () => void;
   released: () => boolean;
   stopped: string[];
+  /** Every user message the CLI read on its stdin, across all processes. */
+  prompts: unknown[];
+  /** How many CLI processes the runtime started. */
+  queries: () => number;
 };
 
 /** A stand-in for the SDK query: yields what the test emits, and reads the held prompt to notice its release. */
 function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContext['createQuery']>; script: Scripted } {
   const queue: Array<Record<string, unknown> | null> = [];
-  let wake: (() => void) | null = null;
+  const wakers: Array<() => void> = [];
   let released = false;
+  let queries = 0;
   const stopped: string[] = [];
+  const prompts: unknown[] = [];
+  const wakeAll = () => { for (const wake of wakers.splice(0)) wake(); };
 
   const script: Scripted = {
-    emit: (message) => { queue.push(message); wake?.(); },
-    end: () => { queue.push(null); wake?.(); },
+    emit: (message) => { queue.push(message); wakeAll(); },
+    end: () => { queue.push(null); wakeAll(); },
     released: () => released,
     stopped,
+    prompts,
+    queries: () => queries,
   };
 
   const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt }) => {
+    queries += 1;
     void (async () => {
-      for await (const _message of prompt) { /* the CLI reads its stdin */ }
+      for await (const message of prompt) { prompts.push(message); /* the CLI reads its stdin */ }
       released = true;
     })();
 
     const iterator = (async function* () {
       for (;;) {
         if (queue.length === 0) {
-          await new Promise<void>((resolve) => { wake = resolve; });
-          wake = null;
+          await new Promise<void>((resolve) => { wakers.push(resolve); });
           continue;
         }
         const next = queue.shift();
@@ -75,8 +84,16 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
   return { createQuery, script };
 }
 
+type AskedTurn = { done: Promise<unknown>; sent: NormalizedMessage[] };
+
 async function withRun(
-  runTest: (context: { script: Scripted; sent: NormalizedMessage[]; done: Promise<unknown> }) => Promise<void>,
+  runTest: (context: {
+    script: Scripted;
+    sent: NormalizedMessage[];
+    done: Promise<unknown>;
+    /** Sends another message to the same session, with a writer of its own like a new chat run has. */
+    ask: (command: string, extraOptions?: Record<string, unknown>) => AskedTurn;
+  }) => Promise<void>,
 ): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
   const { createQuery, script } = createScriptedQuery();
@@ -94,7 +111,15 @@ async function withRun(
 
   try {
     const done = queryClaudeSDK('hello', { sessionId: SESSION_ID, cwd }, writer as never, context);
-    await runTest({ script, sent, done });
+    const ask = (command: string, extraOptions: Record<string, unknown> = {}): AskedTurn => {
+      const askedSent: NormalizedMessage[] = [];
+      const askedWriter = { send: (message: NormalizedMessage) => { askedSent.push(message); }, userId: null };
+      return {
+        done: queryClaudeSDK(command, { sessionId: SESSION_ID, cwd, ...extraOptions }, askedWriter as never, context),
+        sent: askedSent,
+      };
+    };
+    await runTest({ script, sent, done, ask });
     script.end();
     await done;
   } finally {
@@ -197,5 +222,70 @@ test('a turn whose tool emits no task events still holds on the static rule', as
     await settle();
 
     assert.equal(script.released(), false, 'Monitor reports no task, so the launch rule decides');
+  });
+});
+
+/** A turn that leaves a workflow running in the background, so the CLI is held open for it. */
+function launchHeldWorkflow(script: Scripted): void {
+  script.emit(init());
+  script.emit(toolUse('toolu_wf', 'Workflow', { script: 'export const meta = {}' }));
+  script.emit(taskStarted('wf1', 'toolu_wf', 'local_workflow'));
+  script.emit(ack('toolu_wf', 'Workflow launched in background. Task ID: wf1', { status: 'async_launched', taskId: 'wf1', taskType: 'local_workflow' }));
+  script.emit(result());
+}
+
+test('a message sent while the process is held joins it instead of killing the background work', async () => {
+  await withRun(async ({ script, sent, ask }) => {
+    launchHeldWorkflow(script);
+    await settle();
+    const completesBefore = sent.filter((message) => message.kind === 'complete').length;
+
+    const turn = ask('give me a status report');
+    await settle();
+
+    // Same process, message delivered to its stdin, nothing let go.
+    assert.equal(script.queries(), 1, 'no second CLI process is started');
+    assert.equal(script.prompts.length, 2, 'the message reached the live process');
+    assert.equal(script.released(), false, 'stdin stays open: the workflow keeps running');
+    assert.deepEqual(listClaudeSDKBackgroundWork().map((entry) => entry.tasks.map((task) => task.taskId)), [['wf1']]);
+
+    // The reply of the turn that carried the message is streamed to its own writer.
+    script.emit(result());
+    await turn.done;
+    assert.ok(turn.sent.some((message) => message.kind === 'complete'), 'the new turn is completed on its own writer');
+    assert.equal(sent.filter((message) => message.kind === 'complete').length, completesBefore, 'the first writer hears nothing more');
+    assert.equal(script.released(), false, 'the workflow is still outstanding after the report');
+  });
+});
+
+test('once the background work has finished the next message starts a fresh process as before', async () => {
+  await withRun(async ({ script, ask }) => {
+    launchHeldWorkflow(script);
+    await settle();
+    script.emit(taskNotification('wf1', 'toolu_wf', 'completed'));
+    script.emit(result());
+    await settle();
+    assert.equal(script.released(), true, 'the hold ended with the work');
+
+    const turn = ask('and now?');
+    await settle();
+    assert.equal(script.queries(), 2, 'nothing was held, so a new process serves the message');
+    script.end();
+    script.end();
+    await turn.done;
+  });
+});
+
+test('a turn asking for different settings does not join the held process', async () => {
+  await withRun(async ({ script, ask }) => {
+    launchHeldWorkflow(script);
+    await settle();
+
+    const turn = ask('switch model', { model: 'another-model' });
+    await settle();
+    assert.equal(script.queries(), 2, 'the live process cannot change model, so a new one is started');
+    script.end();
+    script.end();
+    await turn.done;
   });
 });
