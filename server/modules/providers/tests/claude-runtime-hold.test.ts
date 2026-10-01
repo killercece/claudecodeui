@@ -34,6 +34,8 @@ type Scripted = {
   prompts: unknown[];
   /** How many CLI processes the runtime started. */
   queries: () => number;
+  /** The options the runtime handed to the SDK for the latest process it started. */
+  lastOptions: () => Record<string, any> | null;
 };
 
 /** A stand-in for the SDK query: yields what the test emits, and reads the held prompt to notice its release. */
@@ -53,9 +55,12 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     stopped,
     prompts,
     queries: () => queries,
+    lastOptions: () => lastOptions,
   };
 
-  const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt }) => {
+  let lastOptions: Record<string, any> | null = null;
+  const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt, options }) => {
+    lastOptions = options as Record<string, any>;
     queries += 1;
     void (async () => {
       for await (const message of prompt) { prompts.push(message); /* the CLI reads its stdin */ }
@@ -325,4 +330,28 @@ test('editing a message never joins the held process, whatever the settings', as
     assert.ok(refused.sent.some((message) => message.kind === 'error'));
     assert.equal(script.prompts.length, 1, 'the edited text never reached stdin');
   });
+});
+
+test('artifact tools are switched on for SDK sessions unless the environment says otherwise', async () => {
+  const previous = process.env.CLAUDE_CODE_ARTIFACT;
+  try {
+    delete process.env.CLAUDE_CODE_ARTIFACT;
+    await withRun(async ({ script }) => {
+      await settle();
+      // Without this the CLI withholds the Artifact tools from SDK-driven sessions (`sdk_default_off`).
+      assert.equal(script.lastOptions()?.env?.CLAUDE_CODE_ARTIFACT, '1');
+    });
+
+    process.env.CLAUDE_CODE_ARTIFACT = '0';
+    await withRun(async ({ script }) => {
+      await settle();
+      assert.equal(script.lastOptions()?.env?.CLAUDE_CODE_ARTIFACT, '0', 'an explicit setting is respected');
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CLAUDE_CODE_ARTIFACT;
+    } else {
+      process.env.CLAUDE_CODE_ARTIFACT = previous;
+    }
+  }
 });
