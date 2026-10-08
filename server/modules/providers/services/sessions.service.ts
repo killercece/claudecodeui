@@ -32,6 +32,12 @@ import { AppError, sliceTailPage } from '@/shared/utils.js';
  * `canInterrupt: false` because there is no run here to abort, and a
  * `statusText` saying where the work is happening.
  */
+/**
+ * Sessions already reported as "busy process, nothing tracked", so the log line
+ * below fires once per episode instead of once per poll.
+ */
+const untrackedBusySessions = new Set<string>();
+
 type RunningSessionEntry = {
   sessionId: string;
   provider: LLMProvider;
@@ -189,12 +195,32 @@ export const sessionsService = {
     // without this a session working under the Claude CLI — including one
     // CloudCLI spawned for its own Shell view — looks idle. A session already
     // listed above keeps its richer entry.
-    for (const live of await listBusyClaudeCliSessions()) {
+    const busyNow = await listBusyClaudeCliSessions();
+    const busyAppIds = new Set(
+      busyNow.map((live) => sessionsDb.getSessionByProviderSessionId(live.providerSessionId)?.session_id),
+    );
+    for (const id of untrackedBusySessions) {
+      if (!busyAppIds.has(id)) untrackedBusySessions.delete(id);
+    }
+    for (const live of busyNow) {
       const session = sessionsDb.getSessionByProviderSessionId(live.providerSessionId);
       if (!session || runningById.has(session.session_id)) {
         continue;
       }
 
+      // A process CloudCLI drives itself (`sdk-ts`) that is busy with no chat run
+      // and no tracked task is still working for this session — typically an
+      // agent or tool the held process waits on. It takes a new message like any
+      // other held process, so the composer must not queue behind it for as long
+      // as that work lasts.
+      const ownedByCloudCli = live.entrypoint === 'sdk-ts';
+      if (ownedByCloudCli && !untrackedBusySessions.has(session.session_id)) {
+        untrackedBusySessions.add(session.session_id);
+        console.warn(
+          `[Sessions] ${session.session_id}: the CLI process is busy for ${Math.round((Date.now() - live.startedAt) / 60000)} min `
+          + 'but no run and no background task is tracked for it',
+        );
+      }
       entries.push({
         sessionId: session.session_id,
         provider: session.provider as LLMProvider,
@@ -202,8 +228,9 @@ export const sessionsService = {
         lastSeq: chatRunRegistry.getRun(session.session_id)?.lastSeq ?? 0,
         // There is no run here to abort: the turn belongs to a CLI process
         // CloudCLI does not own, so it can be reported but not interrupted.
+        ...(ownedByCloudCli ? { background: true as const } : {}),
         canInterrupt: false,
-        statusText: 'Running in the Claude CLI',
+        statusText: ownedByCloudCli ? 'Working in the background' : 'Running in the Claude CLI',
       });
       runningById.set(session.session_id, entries[entries.length - 1]);
     }

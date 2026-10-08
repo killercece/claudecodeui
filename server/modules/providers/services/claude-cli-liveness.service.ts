@@ -11,6 +11,11 @@ import path from 'node:path';
 type LiveClaudeCliSession = {
   providerSessionId: string;
   startedAt: number;
+  /**
+   * How the CLI was launched. `sdk-ts` is a process CloudCLI itself drives
+   * through the Agent SDK, as opposed to a terminal or the Shell view.
+   */
+  entrypoint?: string;
 };
 
 /**
@@ -90,7 +95,8 @@ async function readLiveBusySession(filePath: string): Promise<LiveClaudeCliSessi
   }
 
   const startedAt = typeof record.startedAt === 'number' ? record.startedAt : Date.now();
-  return { providerSessionId, startedAt };
+  const entrypoint = typeof record.entrypoint === 'string' ? record.entrypoint : undefined;
+  return { providerSessionId, startedAt, entrypoint };
 }
 
 /**
