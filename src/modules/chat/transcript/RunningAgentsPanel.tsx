@@ -7,9 +7,53 @@ import { cn } from '@/shared/utils';
 import { AgentTranscriptDrawer } from '@/modules/chat/transcript/AgentTranscriptDrawer';
 import { readBackgroundTaskId, resolveSubagentStatus } from '@/modules/chat/utils/backgroundTasks';
 import { parseToolPayload } from '@/modules/chat/utils/messageTransforms';
+import { readUserPreference, subscribeToUserPreferences, writeUserPreference } from '@/shared/userSettings';
 
 /** How many finished agents stay listed under the running ones; older ones drop off. */
 const MAX_FINISHED_AGENTS = 5;
+
+/** How many sessions, and how many agent ids per session, the panel remembers. */
+const MAX_REMEMBERED_SESSIONS = 20;
+const MAX_REMEMBERED_IDS = 100;
+
+type AgentPanelMemory = { seen: string[]; cleared: string[] };
+
+/**
+ * Which agents this session's panel has seen running or cleared. Kept in the
+ * user's server-side preferences, not in component state, so a second browser
+ * opening the session lists the same finished agents instead of starting blank.
+ */
+function useAgentPanelMemory(sessionId: string | null) {
+  const read = useCallback((): { seen: ReadonlySet<string>; cleared: ReadonlySet<string> } => {
+    const all = readUserPreference<Record<string, AgentPanelMemory>>('agentPanelState', {});
+    const entry = sessionId ? all[sessionId] : undefined;
+    return { seen: new Set(entry?.seen ?? []), cleared: new Set(entry?.cleared ?? []) };
+  }, [sessionId]);
+  const [memory, setMemory] = useState(read);
+
+  useEffect(() => {
+    setMemory(read());
+    return subscribeToUserPreferences(() => setMemory(read()));
+  }, [read]);
+
+  const remember = useCallback((kind: 'seen' | 'cleared', ids: string[]) => {
+    const merge = (current: Iterable<string>) => [...new Set([...current, ...ids])].slice(-MAX_REMEMBERED_IDS);
+    if (!sessionId) {
+      setMemory((previous) => ({ ...previous, [kind]: new Set(merge(previous[kind])) }));
+      return;
+    }
+    const all = readUserPreference<Record<string, AgentPanelMemory>>('agentPanelState', {});
+    const entry = all[sessionId] ?? { seen: [], cleared: [] };
+    const { [sessionId]: _replaced, ...others } = all;
+    const kept = Object.entries(others).slice(-(MAX_REMEMBERED_SESSIONS - 1));
+    writeUserPreference('agentPanelState', {
+      ...Object.fromEntries(kept),
+      [sessionId]: { ...entry, [kind]: merge(entry[kind]) },
+    });
+  }, [sessionId]);
+
+  return { seenRunning: memory.seen, cleared: memory.cleared, remember };
+}
 
 type RunningAgentsPanelProps = {
   /** Every loaded row of the session: an agent launched pages ago can still be running. */
@@ -100,8 +144,7 @@ export const RunningAgentsPanel = memo(({ messages, sessionId, sendMessage, onRe
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(true);
   const [now, setNow] = useState(() => Date.now());
-  const [seenRunning, setSeenRunning] = useState<ReadonlySet<string>>(() => new Set());
-  const [cleared, setCleared] = useState<ReadonlySet<string>>(() => new Set());
+  const { seenRunning, cleared, remember } = useAgentPanelMemory(sessionId);
   // L'agent dont le transcript est ouvert dans le tiroir, retrouvé à chaque rendu pour rester en direct.
   const [openAgentId, setOpenAgentId] = useState<string | null>(null);
   const closeDrawer = useCallback(() => setOpenAgentId(null), []);
@@ -131,12 +174,10 @@ export const RunningAgentsPanel = memo(({ messages, sessionId, sendMessage, onRe
   const runningIds = running.map((message) => message.toolId as string).join('|');
   useEffect(() => {
     if (!runningIds) return;
-    setSeenRunning((previous) => {
-      const ids = runningIds.split('|');
-      if (ids.every((id) => previous.has(id))) return previous;
-      return new Set([...previous, ...ids]);
-    });
-  }, [runningIds]);
+    const ids = runningIds.split('|');
+    if (ids.every((id) => seenRunning.has(id))) return;
+    remember('seen', ids);
+  }, [runningIds, seenRunning, remember]);
 
   // Tick seulement tant qu'un agent tourne : la durée affichée avance sans nouvelle donnée.
   const hasRunning = running.length > 0;
@@ -151,7 +192,7 @@ export const RunningAgentsPanel = memo(({ messages, sessionId, sendMessage, onRe
   if (!hasRunning && finished.length === 0 && !openAgent) return null;
 
   const clearFinished = () => {
-    setCleared((previous) => new Set([...previous, ...finished.map((message) => message.toolId as string)]));
+    remember('cleared', finished.map((message) => message.toolId as string));
   };
 
   const title = hasRunning

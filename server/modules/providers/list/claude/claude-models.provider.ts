@@ -75,6 +75,22 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
       },
     },
     {
+      value: 'claude-sonnet-5-5',
+      label: 'Sonnet 5.5',
+      description: 'Sonnet 5.5, pinned to this exact version.',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+          ULTRACODE_EFFORT_OPTION,
+        ],
+      },
+    },
+    {
       value: 'sonnet',
       label: 'Sonnet',
       description: 'Latest Sonnet model for everyday coding tasks.',
@@ -160,7 +176,7 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
       },
     },
   ],
-  DEFAULT: 'default',
+  DEFAULT: 'claude-sonnet-5-5',
 };
 
 export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {

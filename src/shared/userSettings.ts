@@ -28,6 +28,10 @@ export type UserPreferences = {
   codeEditorSettings: unknown;
   uiPreferences: unknown;
   selectedProvider: string;
+  sessionTabs: unknown;
+  providerModels: unknown;
+  providerEfforts: unknown;
+  agentPanelState: unknown;
 };
 
 export type UserPreferenceKey = keyof UserPreferences;
@@ -67,6 +71,11 @@ const LEGACY_STORAGE_KEYS: Record<UserPreferenceKey, string> = {
   codeEditorSettings: '',
   uiPreferences: 'uiPreferences',
   selectedProvider: 'selected-provider',
+  sessionTabs: 'cloudcli:sessionTabs',
+  // Per-provider keys (`claude-model`, `claude-effort`…) : lus par useChatProviderState.
+  providerModels: '',
+  providerEfforts: '',
+  agentPanelState: '',
 };
 
 const PREFERENCE_KEYS = Object.keys(LEGACY_STORAGE_KEYS) as UserPreferenceKey[];

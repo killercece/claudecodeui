@@ -11,6 +11,7 @@ import type { PendingPermissionRequest, PermissionMode,
   ProviderModelsDefinition } from '@/shared/types';
 import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
 import { readSelectedProvider, writeSelectedProvider } from '@/shared/selectedProvider';
+import { readUserPreference, subscribeToUserPreferences, writeUserPreference } from '@/shared/userSettings';
 
 const FALLBACK_PROVIDER_EFFORT_VALUES: Partial<Record<LLMProvider, readonly string[]>> = {
   // Superset used only before the model catalog loads; `ultracode` belongs to the
@@ -29,7 +30,7 @@ const toProviderEffortOptions = (
 ): NonNullable<ProviderModelOption['effort']>['values'] => values.map((value) => ({ value }));
 
 const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
-  claude: 'default',
+  claude: 'claude-sonnet-5-5',
   cursor: 'gpt-5.3-codex',
   codex: 'gpt-5.4',
   opencode: 'anthropic/claude-sonnet-4-5',
@@ -37,8 +38,40 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
 
 const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
 
-/** localStorage key holding the user's default model for one provider. */
-const providerModelStorageKey = (provider: LLMProvider): string => `${provider}-model`;
+type ProviderValuePreference = 'providerModels' | 'providerEfforts';
+
+/**
+ * Reads the user's stored model or effort for one provider. The server-side
+ * preference wins so the choice follows the user across browsers; the old
+ * per-provider localStorage key is only a fallback for installs not yet migrated.
+ */
+const readStoredProviderValue = (
+  preference: ProviderValuePreference,
+  provider: LLMProvider,
+  legacyKey: string,
+): string | null => {
+  const stored = readUserPreference<Record<string, string>>(preference, {})[provider];
+  return stored || localStorage.getItem(legacyKey);
+};
+
+const writeStoredProviderValue = (
+  preference: ProviderValuePreference,
+  provider: LLMProvider,
+  value: string,
+): void => {
+  writeUserPreference(preference, {
+    ...readUserPreference<Record<string, string>>(preference, {}),
+    [provider]: value,
+  });
+};
+
+const readStoredProviderModel = (provider: LLMProvider): string | null => (
+  readStoredProviderValue('providerModels', provider, `${provider}-model`)
+);
+
+const readStoredProviderEffort = (provider: LLMProvider): string | null => (
+  readStoredProviderValue('providerEfforts', provider, `${provider}-effort`)
+);
 
 /**
  * Fallback permission-mode matrix used only until the backend capability
@@ -136,14 +169,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   // that validates them arrives asynchronously per provider.
   const [providerModels, setProviderModels] = useState<Record<LLMProvider, string>>(() => {
     return PROVIDERS.reduce<Record<LLMProvider, string>>((acc, targetProvider) => {
-      acc[targetProvider] = localStorage.getItem(providerModelStorageKey(targetProvider))
+      acc[targetProvider] = readStoredProviderModel(targetProvider)
         || FALLBACK_DEFAULT_MODEL[targetProvider];
       return acc;
     }, {} as Record<LLMProvider, string>);
   });
   const [providerEfforts, setProviderEfforts] = useState<Partial<Record<LLMProvider, string>>>(() => {
     return PROVIDERS.reduce<Partial<Record<LLMProvider, string>>>((acc, targetProvider) => {
-      acc[targetProvider] = localStorage.getItem(`${targetProvider}-effort`) || DEFAULT_EFFORT_VALUE;
+      acc[targetProvider] = readStoredProviderEffort(targetProvider) || DEFAULT_EFFORT_VALUE;
       return acc;
     }, {});
   });
@@ -158,6 +191,25 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [providerCapabilities, setProviderCapabilities] = useState<
     Partial<Record<LLMProvider, ProviderCapabilities>> | null
   >(null);
+
+  // Adopte le modèle et l'effort du serveur quand ils arrivent (hydratation)
+  // ou changent depuis un autre navigateur.
+  useEffect(() => subscribeToUserPreferences(() => {
+    setProviderModels((previous) => {
+      const next = { ...previous };
+      for (const targetProvider of PROVIDERS) {
+        next[targetProvider] = readStoredProviderModel(targetProvider) || previous[targetProvider];
+      }
+      return PROVIDERS.every((p) => next[p] === previous[p]) ? previous : next;
+    });
+    setProviderEfforts((previous) => {
+      const next = { ...previous };
+      for (const targetProvider of PROVIDERS) {
+        next[targetProvider] = readStoredProviderEffort(targetProvider) || previous[targetProvider];
+      }
+      return PROVIDERS.every((p) => next[p] === previous[p]) ? previous : next;
+    });
+  }), []);
 
   const [providerModelCatalog, setProviderModelCatalog] = useState<
     Partial<Record<LLMProvider, ProviderModelsDefinition>>
@@ -175,7 +227,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
         ? previous
         : { ...previous, [targetProvider]: model }
     ));
-    localStorage.setItem(providerModelStorageKey(targetProvider), model);
+    writeStoredProviderValue('providerModels', targetProvider, model);
   }, []);
 
   const setStoredProviderEffort = useCallback((targetProvider: LLMProvider, effort: string) => {
@@ -184,7 +236,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
         ? previous
         : { ...previous, [targetProvider]: effort }
     ));
-    localStorage.setItem(`${targetProvider}-effort`, effort);
+    writeStoredProviderValue('providerEfforts', targetProvider, effort);
   }, []);
 
   const loadProviderModels = useCallback(async () => {
@@ -287,11 +339,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [providerCapabilities]);
 
   const pickStoredOrCurrent = (
-    storageKey: string,
+    targetProvider: LLMProvider,
     current: string,
     def: ProviderModelsDefinition,
   ): string => {
-    const stored = localStorage.getItem(storageKey);
+    const stored = readStoredProviderModel(targetProvider);
     if (stored && def.OPTIONS.some((o) => o.value === stored)) {
       return stored;
     }
@@ -368,15 +420,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
         continue;
       }
 
-      const storageKey = providerModelStorageKey(targetProvider);
       const currentModel = providerModels[targetProvider];
-      const nextModel = pickStoredOrCurrent(storageKey, currentModel, catalog);
+      const nextModel = pickStoredOrCurrent(targetProvider, currentModel, catalog);
 
       if (nextModel !== currentModel) {
         reconciledModels[targetProvider] = nextModel;
       }
-      if (localStorage.getItem(storageKey) !== nextModel) {
-        localStorage.setItem(storageKey, nextModel);
+      if (readStoredProviderModel(targetProvider) !== nextModel) {
+        writeStoredProviderValue('providerModels', targetProvider, nextModel);
       }
     }
 
@@ -397,7 +448,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       }
 
       nextEfforts[targetProvider] = nextEffort;
-      localStorage.setItem(`${targetProvider}-effort`, nextEffort);
+      writeStoredProviderValue('providerEfforts', targetProvider, nextEffort);
       hasUpdates = true;
     }
 

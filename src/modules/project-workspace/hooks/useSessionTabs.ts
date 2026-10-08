@@ -1,25 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import type { ProjectSession } from '@/shared/types';
+import { readUserPreference, subscribeToUserPreferences, writeUserPreference } from '@/shared/userSettings';
 
 export type SessionTab = {
   id: string;
   title: string;
 };
 
-const STORAGE_KEY = 'cloudcli:sessionTabs';
-
 function readStoredTabs(): SessionTab[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (tab): tab is SessionTab => typeof tab?.id === 'string' && typeof tab?.title === 'string',
-    );
-  } catch {
-    return [];
-  }
+  const parsed = readUserPreference<unknown>('sessionTabs', []);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (tab): tab is SessionTab => typeof tab?.id === 'string' && typeof tab?.title === 'string',
+  );
 }
 
 function sessionTitle(session: ProjectSession): string {
@@ -29,18 +23,21 @@ function sessionTitle(session: ProjectSession): string {
 /**
  * Keeps the list of open session tabs (VS Code style). A tab is added whenever a
  * session becomes the selected one, whatever opened it (sidebar, URL, new chat),
- * and the list is persisted in localStorage across reloads.
+ * and the list is persisted in the user's server-side preferences.
  */
 export function useSessionTabs(selectedSession: ProjectSession | null) {
   const [tabs, setTabs] = useState<SessionTab[]>(readStoredTabs);
 
+  // Les onglets vivent côté serveur : ils suivent l'utilisateur d'un navigateur à l'autre.
   useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(tabs));
-    } catch {
-      // Stockage indisponible (mode privé, quota) : les onglets restent en mémoire.
-    }
+    writeUserPreference('sessionTabs', tabs);
   }, [tabs]);
+
+  // Adopte la copie du serveur quand elle arrive (hydratation) ou change.
+  useEffect(() => subscribeToUserPreferences(() => {
+    const stored = readStoredTabs();
+    setTabs((previous) => (JSON.stringify(previous) === JSON.stringify(stored) ? previous : stored));
+  }), []);
 
   const selectedId = selectedSession?.id ?? null;
   const selectedTitle = selectedSession ? sessionTitle(selectedSession) : '';
