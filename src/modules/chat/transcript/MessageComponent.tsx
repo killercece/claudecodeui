@@ -178,6 +178,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
             <span className="text-xs text-gray-500 dark:text-gray-400">
               {message.content || t('chat:misc.compacted', 'Compacted')}
             </span>
+            <span className="text-[11px] text-gray-400 dark:text-gray-500">{formattedTime}</span>
           </div>
           {message.compactSummary && (
             <details className="ml-3.5 mt-0.5">
@@ -198,6 +199,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
           <div className="flex items-center gap-2 py-0.5">
             <span className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${message.taskNotificationStatus === 'completed' ? 'bg-green-400 dark:bg-green-500' : 'bg-amber-400 dark:bg-amber-500'}`} />
             <span className="text-xs text-gray-500 dark:text-gray-400">{message.content}</span>
+            <span className="text-[11px] text-gray-400 dark:text-gray-500">{formattedTime}</span>
           </div>
         </div>
       ) : (
@@ -409,7 +411,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <MemoryCitations citations={message.memoryCitations} />
             )}
 
-            {(shouldShowAssistantCopyControl || !isGrouped) && (
+            {(
               <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-gray-400 dark:text-gray-500">
                 {shouldShowAssistantCopyControl && (
                   <MessageCopyControl content={assistantCopyContent} messageType="assistant" />
@@ -422,7 +424,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                     copy and speak it is not gated on the copy control, and an
                     exported transcript keeps it wherever the footer renders. */}
                 <MessageModelLabel model={message.model} />
-                {!isGrouped && <span>{formattedTime}</span>}
+                <span>{formattedTime}</span>
               </div>
             )}
           </div>

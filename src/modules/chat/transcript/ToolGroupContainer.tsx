@@ -139,6 +139,11 @@ function ToolGroupContainer({
           </>
         )}
         {groupDiffStats && <DiffStatsBadge stats={groupDiffStats} className="ml-auto pl-2" />}
+        {group.timestamp && (
+          <span className={`${groupDiffStats ? '' : 'ml-auto '}flex-shrink-0 pl-2 text-[11px] text-muted-foreground`}>
+            {new Date(group.timestamp).toLocaleTimeString()}
+          </span>
+        )}
       </button>
 
       {showChildren && (
