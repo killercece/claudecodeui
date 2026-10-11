@@ -536,7 +536,17 @@ export function useChatSessionState({
     if (!container) return;
 
     const nearBottom = isNearBottom();
-    setIsUserScrolledUp(!nearBottom);
+    // Le contenu a grandi sans que l'utilisateur ait remonté (streaming, résultat
+    // d'outil, image) : on reste collé en bas au lieu de passer en « remonté ».
+    const grewUnderneath = !nearBottom
+      && !isUserScrolledUpRef.current
+      && container.scrollHeight > scrollPositionRef.current.height
+      && container.scrollTop >= scrollPositionRef.current.top;
+    if (grewUnderneath) {
+      container.scrollTop = container.scrollHeight;
+    } else {
+      setIsUserScrolledUp(!nearBottom);
+    }
     scrollPositionRef.current = {
       height: container.scrollHeight,
       top: container.scrollTop,
@@ -1015,6 +1025,41 @@ export function useChatSessionState({
       }, 50);
     }
   }, [chatMessages.length, isActive, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
+
+  // Suit la croissance du contenu (texte en streaming dans le dernier message,
+  // blocs d'outils qui se déplient, images) : le nombre de messages ne change
+  // pas dans ces cas, donc l'effet ci-dessus ne se déclenche pas.
+  const hasMessages = chatMessages.length > 0;
+  useEffect(() => {
+    if (!isActive || !hasMessages) return;
+    const container = scrollContainerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+
+    let rafId = 0;
+    const observer = new ResizeObserver(() => {
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        if (isUserScrolledUpRef.current) return;
+        if (searchScrollActiveRef.current) return;
+        if (isLoadingMoreRef.current || pendingScrollRestoreRef.current) return;
+        container.scrollTop = container.scrollHeight;
+      });
+    });
+    // Le conteneur a plusieurs enfants (bandeau, messages, indicateur d'activité)
+    // qui apparaissent et disparaissent : on les observe tous.
+    const observeChildren = () => {
+      for (const child of Array.from(container.children)) observer.observe(child);
+    };
+    observeChildren();
+    const mutations = new MutationObserver(observeChildren);
+    mutations.observe(container, { childList: true });
+    return () => {
+      observer.disconnect();
+      mutations.disconnect();
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [hasMessages, isActive, selectedSession?.id]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;

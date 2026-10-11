@@ -1155,7 +1155,11 @@ export async function searchConversations(
   totalMatches: number;
   query: string;
 }> {
-  const safeQuery = typeof query === 'string' ? query.trim() : '';
+  // Une requête entre guillemets ("…", “…”, « … ») est une expression exacte :
+  // les guillemets entourant la requête ne font pas partie du texte cherché.
+  const safeQuery = typeof query === 'string'
+    ? query.trim().replace(/^(?:["“”«]\s*)+|(?:\s*["“”»])+$/g, '').trim()
+    : '';
   const safeLimit = Math.max(1, Math.min(Number.isFinite(limit) ? limit : 50, 200));
   const words = safeQuery.toLowerCase().split(/\s+/).filter((word) => word.length > 0);
 
