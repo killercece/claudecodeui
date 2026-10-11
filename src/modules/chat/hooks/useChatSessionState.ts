@@ -236,6 +236,7 @@ export function useChatSessionState({
    * time, a scroll-up inside that window is silently undone.
    */
   const isUserScrolledUpRef = useRef(false);
+  const lastHandledScrollTopRef = useRef(0);
   const isLoadingMoreRef = useRef(false);
   const allMessagesLoadedRef = useRef(false);
   const topLoadLockRef = useRef(false);
@@ -452,6 +453,7 @@ export function useChatSessionState({
     const container = scrollContainerRef.current;
     if (!container) return;
     container.scrollTop = container.scrollHeight;
+    lastHandledScrollTopRef.current = container.scrollTop;
   }, []);
 
   const scrollToBottomAndReset = useCallback(() => {
@@ -536,16 +538,18 @@ export function useChatSessionState({
     if (!container) return;
 
     const nearBottom = isNearBottom();
-    // Le contenu a grandi sans que l'utilisateur ait remonté (streaming, résultat
-    // d'outil, image) : on reste collé en bas au lieu de passer en « remonté ».
-    const grewUnderneath = !nearBottom
-      && !isUserScrolledUpRef.current
-      && container.scrollHeight > scrollPositionRef.current.height
-      && container.scrollTop >= scrollPositionRef.current.top;
-    if (grewUnderneath) {
+    // Seul un déplacement vers le haut est une remontée volontaire. Un contenu
+    // qui grandit (streaming, images, lignes paresseuses) éloigne du bas sans
+    // faire reculer scrollTop : on reste alors collé en bas.
+    const movedUp = container.scrollTop < lastHandledScrollTopRef.current - 1;
+    lastHandledScrollTopRef.current = container.scrollTop;
+    if (nearBottom) {
+      setIsUserScrolledUp(false);
+    } else if (movedUp) {
+      setIsUserScrolledUp(true);
+    } else if (!isUserScrolledUpRef.current) {
       container.scrollTop = container.scrollHeight;
-    } else {
-      setIsUserScrolledUp(!nearBottom);
+      lastHandledScrollTopRef.current = container.scrollTop;
     }
     scrollPositionRef.current = {
       height: container.scrollHeight,
@@ -635,6 +639,7 @@ export function useChatSessionState({
     pendingScrollRestoreRef.current = null;
     wasNearTopRef.current = false;
     setIsUserScrolledUp(false);
+    lastHandledScrollTopRef.current = 0;
   }, [selectedProject?.projectId, selectedSession?.id]);
 
   // Initial scroll to bottom — robust to lazy content reflow.
@@ -662,6 +667,7 @@ export function useChatSessionState({
     const tick = () => {
       if (!pendingInitialScrollRef.current || !scrollContainerRef.current) return;
       container.scrollTop = container.scrollHeight;
+      lastHandledScrollTopRef.current = container.scrollTop;
       if (container.scrollHeight === lastHeight) {
         stableCount++;
       } else {
@@ -1044,6 +1050,7 @@ export function useChatSessionState({
         if (searchScrollActiveRef.current) return;
         if (isLoadingMoreRef.current || pendingScrollRestoreRef.current) return;
         container.scrollTop = container.scrollHeight;
+        lastHandledScrollTopRef.current = container.scrollTop;
       });
     });
     // Le conteneur a plusieurs enfants (bandeau, messages, indicateur d'activité)
