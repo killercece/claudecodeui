@@ -236,7 +236,12 @@ export function useChatSessionState({
    * time, a scroll-up inside that window is silently undone.
    */
   const isUserScrolledUpRef = useRef(false);
-  const lastHandledScrollTopRef = useRef(0);
+  // Intention de l'utilisateur : un scroll n'est une « remontée » que si une
+  // entrée utilisateur (molette vers le haut, geste, touche, barre de défilement)
+  // vient de l'avoir provoqué. Les décalages dus au contenu (streaming, lignes
+  // paresseuses qui changent de hauteur) ne comptent jamais.
+  const userScrollUntilRef = useRef(0);
+  const pointerHeldRef = useRef(false);
   const isLoadingMoreRef = useRef(false);
   const allMessagesLoadedRef = useRef(false);
   const topLoadLockRef = useRef(false);
@@ -453,7 +458,6 @@ export function useChatSessionState({
     const container = scrollContainerRef.current;
     if (!container) return;
     container.scrollTop = container.scrollHeight;
-    lastHandledScrollTopRef.current = container.scrollTop;
   }, []);
 
   const scrollToBottomAndReset = useCallback(() => {
@@ -538,18 +542,15 @@ export function useChatSessionState({
     if (!container) return;
 
     const nearBottom = isNearBottom();
-    // Seul un déplacement vers le haut est une remontée volontaire. Un contenu
-    // qui grandit (streaming, images, lignes paresseuses) éloigne du bas sans
-    // faire reculer scrollTop : on reste alors collé en bas.
-    const movedUp = container.scrollTop < lastHandledScrollTopRef.current - 1;
-    lastHandledScrollTopRef.current = container.scrollTop;
+    // Collé en bas par défaut ; seule une action volontaire pour remonter
+    // décolle, et on ne recolle qu'en revenant en bas.
+    const userIsScrolling = pointerHeldRef.current || Date.now() < userScrollUntilRef.current;
     if (nearBottom) {
       setIsUserScrolledUp(false);
-    } else if (movedUp) {
+    } else if (userIsScrolling) {
       setIsUserScrolledUp(true);
     } else if (!isUserScrolledUpRef.current) {
       container.scrollTop = container.scrollHeight;
-      lastHandledScrollTopRef.current = container.scrollTop;
     }
     scrollPositionRef.current = {
       height: container.scrollHeight,
@@ -639,7 +640,6 @@ export function useChatSessionState({
     pendingScrollRestoreRef.current = null;
     wasNearTopRef.current = false;
     setIsUserScrolledUp(false);
-    lastHandledScrollTopRef.current = 0;
   }, [selectedProject?.projectId, selectedSession?.id]);
 
   // Initial scroll to bottom — robust to lazy content reflow.
@@ -667,7 +667,6 @@ export function useChatSessionState({
     const tick = () => {
       if (!pendingInitialScrollRef.current || !scrollContainerRef.current) return;
       container.scrollTop = container.scrollHeight;
-      lastHandledScrollTopRef.current = container.scrollTop;
       if (container.scrollHeight === lastHeight) {
         stableCount++;
       } else {
@@ -1050,7 +1049,6 @@ export function useChatSessionState({
         if (searchScrollActiveRef.current) return;
         if (isLoadingMoreRef.current || pendingScrollRestoreRef.current) return;
         container.scrollTop = container.scrollHeight;
-        lastHandledScrollTopRef.current = container.scrollTop;
       });
     });
     // Le conteneur a plusieurs enfants (bandeau, messages, indicateur d'activité)
@@ -1067,6 +1065,43 @@ export function useChatSessionState({
       if (rafId) cancelAnimationFrame(rafId);
     };
   }, [hasMessages, isActive, selectedSession?.id]);
+
+  // Détecte les actions de l'utilisateur qui peuvent le faire remonter.
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const markUserScroll = () => { userScrollUntilRef.current = Date.now() + 700; };
+    let touchY = 0;
+    const onWheel = (event: WheelEvent) => { if (event.deltaY < 0) markUserScroll(); };
+    const onTouchStart = (event: TouchEvent) => { touchY = event.touches[0]?.clientY ?? 0; };
+    const onTouchMove = (event: TouchEvent) => {
+      const y = event.touches[0]?.clientY ?? 0;
+      if (y > touchY) markUserScroll();
+      touchY = y;
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (['PageUp', 'Home', 'ArrowUp'].includes(event.key)) markUserScroll();
+    };
+    const onPointerDown = () => { pointerHeldRef.current = true; };
+    const onPointerUp = () => { pointerHeldRef.current = false; };
+    container.addEventListener('wheel', onWheel, { passive: true });
+    container.addEventListener('touchstart', onTouchStart, { passive: true });
+    container.addEventListener('touchmove', onTouchMove, { passive: true });
+    container.addEventListener('keydown', onKeyDown);
+    container.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+    return () => {
+      container.removeEventListener('wheel', onWheel);
+      container.removeEventListener('touchstart', onTouchStart);
+      container.removeEventListener('touchmove', onTouchMove);
+      container.removeEventListener('keydown', onKeyDown);
+      container.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+      pointerHeldRef.current = false;
+    };
+  }, [isActive, hasMessages, selectedSession?.id]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
